@@ -507,6 +507,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return;
     }
 
+    if (hasDbPassword === false && confirmPasswordInput && passwordInput !== confirmPasswordInput) {
+      setAuthError('Şifreler birbiriyle eşleşmiyor.');
+      return;
+    }
+
+    // Preserve Safari/WebKit user gesture: trigger Google popup BEFORE any await if DB password is not yet saved
+    let popupUser: User | null = firebaseUser || auth.currentUser;
+    if (hasDbPassword === false && !popupUser && passwordInput.length >= 6) {
+      try {
+        const cred = await signInWithPopup(auth, googleProvider);
+        popupUser = cred.user;
+      } catch {
+        popupUser = null;
+      }
+    }
+
     setAuthLoading(true);
     try {
       // Ensure fresh Firestore status even if user clicked before mount probe completed
@@ -526,7 +542,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setHasDbPassword(dbCheck.hasDatabasePassword);
 
       if (dbCheck.matched) {
-        const activeUser = firebaseUser || auth.currentUser;
+        const activeUser = popupUser || firebaseUser || auth.currentUser;
         const serverToken = await syncOptionalServerSession(passwordInput, activeUser);
         if (serverToken) {
           setAdminSessionToken(serverToken);
@@ -559,55 +575,43 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       }
 
       // 3) No password stored in Cloud Firestore yet:
-      //    First check if already signed in or try Firebase Google Admin setup directly against Firestore
-      if (passwordInput.length >= 6) {
-        let activeUser = firebaseUser || auth.currentUser;
-        if (!activeUser) {
-          try {
-            const cred = await signInWithPopup(auth, googleProvider);
-            activeUser = cred.user;
-          } catch {
-            // Popup blocked or closed: fall through to optional server bootstrap below
-            activeUser = null;
-          }
-        }
-
-        if (activeUser) {
-          const isAuthorized = await verifyFirebaseAdminUser(activeUser);
-          if (!isAuthorized) {
-            await signOut(auth).catch(() => {});
-            setAuthError('Bu Google hesabı Firebase veritabanında yetkili yönetici değil.');
-            return;
-          }
-          await saveAdminPasswordToDatabase(passwordInput);
-          setHasDbPassword(true);
-          await saveAdminRecord({
-            uid: activeUser.uid,
-            email: activeUser.email || '',
-            displayName: activeUser.displayName || 'Yönetici',
-            role: 'superadmin',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          }).catch(() => {});
-
-          const serverToken = await syncOptionalServerSession(passwordInput, activeUser);
-          if (serverToken) {
-            setAdminSessionToken(serverToken);
-            setSessionToken(serverToken);
-          } else {
-            setAdminSessionToken(null);
-            setSessionToken(`db:firebase:${activeUser.uid}`);
-          }
-          setNeedsInitialSetup(false);
-          setPasswordInput('');
-          setConfirmPasswordInput('');
-          notify('Yönetici şifresi Cloud Firestore veritabanına kaydedildi.');
+      //    If Firebase Admin Google user is connected, save hashed password directly to Cloud Firestore
+      const activeUser = popupUser || firebaseUser || auth.currentUser;
+      if (passwordInput.length >= 6 && activeUser) {
+        const isAuthorized = await verifyFirebaseAdminUser(activeUser);
+        if (!isAuthorized) {
+          await signOut(auth).catch(() => {});
+          setAuthError('Bu Google hesabı Firebase veritabanında yetkili yönetici değil.');
           return;
         }
+        await saveAdminPasswordToDatabase(passwordInput);
+        setHasDbPassword(true);
+        await saveAdminRecord({
+          uid: activeUser.uid,
+          email: activeUser.email || '',
+          displayName: activeUser.displayName || 'Yönetici',
+          role: 'superadmin',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }).catch(() => {});
+
+        const serverToken = await syncOptionalServerSession(passwordInput, activeUser);
+        if (serverToken) {
+          setAdminSessionToken(serverToken);
+          setSessionToken(serverToken);
+        } else {
+          setAdminSessionToken(null);
+          setSessionToken(`db:firebase:${activeUser.uid}`);
+        }
+        setNeedsInitialSetup(false);
+        setPasswordInput('');
+        setConfirmPasswordInput('');
+        notify('Yönetici şifresi Cloud Firestore veritabanına kaydedildi.');
+        return;
       }
 
       // 4) Fallback if Firebase popup wasn't used and server endpoint is available
-      const idToken = firebaseUser ? await firebaseUser.getIdToken(true).catch(() => undefined) : undefined;
+      const idToken = activeUser ? await activeUser.getIdToken(true).catch(() => undefined) : undefined;
       const endpoint = needsInitialSetup ? '/api/admin/claim' : '/api/admin/login';
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -620,7 +624,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       if (!res) {
         setAuthError(
-          'Şifreyi Firebase veritabanına ilk kez kaydetmek için aşağıdaki "Google ile Firebase\'den Doğrula" butonunu kullanın.'
+          'Şifreyi Firebase veritabanına ilk kez kaydetmek için aşağıdaki "Google Yönetici Hesabı ile Firebase\'den Doğrula" butonunu kullanın.'
         );
         return;
       }
