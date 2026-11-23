@@ -3,6 +3,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   onSnapshot,
   orderBy,
   query,
@@ -510,3 +511,95 @@ export async function uploadReelsToStorage(
   const url = await getDownloadURL(storageRef);
   return { url, path: storagePath };
 }
+
+export async function hashAdminPassword(password: string): Promise<string> {
+  const data = new TextEncoder().encode(`kirmizivemavi-admin-v1:${password}`);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export async function checkDatabasePasswordStatus(): Promise<boolean> {
+  try {
+    const snap = await getDoc(doc(db, 'admin_guvenlik', 'status'));
+    if (!snap.exists()) return false;
+    return Boolean(snap.data()?.hasDatabasePassword);
+  } catch {
+    return false;
+  }
+}
+
+export async function verifyAdminPasswordInDatabase(password: string): Promise<{
+  matched: boolean;
+  keyHash: string;
+  hasDatabasePassword: boolean;
+}> {
+  const keyHash = await hashAdminPassword(password);
+  const [keyRes, statusRes] = await Promise.allSettled([
+    getDoc(doc(db, 'admin_keys', keyHash)),
+    getDoc(doc(db, 'admin_guvenlik', 'status')),
+  ]);
+  const matched = keyRes.status === 'fulfilled' && keyRes.value.exists();
+  const statusFlag =
+    statusRes.status === 'fulfilled' &&
+    statusRes.value.exists() &&
+    Boolean(statusRes.value.data()?.hasDatabasePassword);
+  return {
+    matched,
+    keyHash,
+    hasDatabasePassword: matched || statusFlag,
+  };
+}
+
+export async function saveAdminPasswordToDatabase(
+  newPassword: string,
+  oldPassword?: string
+): Promise<string> {
+  const user = auth.currentUser;
+  if (!user) {
+    throw new Error('Şifreyi veritabanına kaydetmek için Google hesabınızla bulut bağlantısını açın.');
+  }
+  if (typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 128) {
+    throw new Error('Şifre en az 6, en fazla 128 karakter olmalıdır.');
+  }
+
+  const newHash = await hashAdminPassword(newPassword);
+  const now = new Date().toISOString();
+
+  try {
+    const existingSnap = await getDoc(doc(db, 'admin_keys', newHash));
+    if (existingSnap.exists()) {
+      await updateDoc(doc(db, 'admin_keys', newHash), {
+        label: 'primary',
+        updatedAt: now,
+      });
+    } else {
+      await setDoc(doc(db, 'admin_keys', newHash), {
+        keyHash: newHash,
+        label: 'primary',
+        createdBy: user.uid,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    await setDoc(doc(db, 'admin_guvenlik', 'status'), {
+      hasDatabasePassword: true,
+      updatedBy: user.uid,
+      updatedAt: now,
+    });
+
+    if (oldPassword && oldPassword.length > 0) {
+      const oldHash = await hashAdminPassword(oldPassword);
+      if (oldHash !== newHash) {
+        await deleteDoc(doc(db, 'admin_keys', oldHash)).catch(() => {});
+      }
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'admin_keys');
+  }
+
+  return newHash;
+}
+

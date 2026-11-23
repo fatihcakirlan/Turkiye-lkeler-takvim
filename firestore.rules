@@ -10,6 +10,10 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidKeyHash(keyId) {
+      return keyId is string && keyId.size() == 64 && keyId.matches('^[a-f0-9]{64}$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -53,6 +57,24 @@ service cloud.firestore {
         (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 80)) &&
         data.role in ['superadmin', 'admin'] &&
         data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidAdminPasswordKey(data) {
+      return data.keys().hasAll(['keyHash', 'createdBy', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['keyHash', 'label', 'createdBy', 'createdAt', 'updatedAt']) &&
+        isValidKeyHash(data.keyHash) &&
+        (!('label' in data) || (data.label is string && data.label.size() <= 32)) &&
+        isValidId(data.createdBy) &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidAdminSecurityStatus(data) {
+      return data.keys().hasAll(['hasDatabasePassword', 'updatedBy', 'updatedAt']) &&
+        data.keys().hasOnly(['hasDatabasePassword', 'updatedBy', 'updatedAt']) &&
+        data.hasDatabasePassword is bool &&
+        isValidId(data.updatedBy) &&
         data.updatedAt is string && data.updatedAt.size() <= 64;
     }
 
@@ -182,6 +204,32 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'role', 'updatedAt']);
       allow delete: if isValidId(adminId) && isBootstrappedAdmin();
+    }
+
+    // Hashed admin password verification keys: get only by exact 64-char SHA-256 hash; never listable
+    match /admin_keys/{keyId} {
+      allow get: if isValidKeyHash(keyId);
+      allow list: if false;
+      allow create: if isValidKeyHash(keyId) && isAdmin() && isValidAdminPasswordKey(incoming()) &&
+        incoming().keyHash == keyId && incoming().createdBy == request.auth.uid;
+      allow update: if isValidKeyHash(keyId) && isAdmin() && isValidAdminPasswordKey(incoming()) &&
+        incoming().keyHash == existing().keyHash &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['label', 'updatedAt']);
+      allow delete: if isValidKeyHash(keyId) && isAdmin();
+    }
+
+    // Non-secret status flag indicating whether a database admin password is configured
+    match /admin_guvenlik/{docId} {
+      allow get: if docId == 'status';
+      allow list: if false;
+      allow create: if docId == 'status' && isAdmin() && isValidAdminSecurityStatus(incoming()) &&
+        incoming().updatedBy == request.auth.uid;
+      allow update: if docId == 'status' && isAdmin() && isValidAdminSecurityStatus(incoming()) &&
+        incoming().updatedBy == request.auth.uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['hasDatabasePassword', 'updatedBy', 'updatedAt']);
+      allow delete: if docId == 'status' && isBootstrappedAdmin();
     }
 
     // Countries catalog overrides & custom countries

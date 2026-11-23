@@ -15,5 +15,7 @@ export const DIRTY_DOZEN_TEST_CASES = [
   { name: 'Invalid battle status enum', collection: 'savaslar/active', auth: 'admin', payload: { status: 'hacked' } },
   { name: 'Document ID poisoning', collection: 'ulkeler/invalid id with spaces', auth: 'admin', payload: {} },
   { name: 'Unauthenticated battle_history deletion', collection: 'battle_history/rec1', auth: null, op: 'delete' },
-  { name: 'Out-of-range soldiersPerFollower', collection: 'ayarlar/global', auth: 'admin', payload: { soldiersPerFollower: 0 } }
+  { name: 'Out-of-range soldiersPerFollower', collection: 'ayarlar/global', auth: 'admin', payload: { soldiersPerFollower: 0 } },
+  { name: 'List enumeration of admin_keys', collection: 'admin_keys', auth: null, op: 'list' },
+  { name: 'Unauthenticated write to admin_guvenlik/status', collection: 'admin_guvenlik/status', auth: null, payload: { hasDatabasePassword: true } }
 ];

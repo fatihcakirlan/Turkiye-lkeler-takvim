@@ -5,6 +5,7 @@
 2. **Public Spectator Read-Only**: Public visitors can read non-PII live battle state (`/savaslar`), countries (`/ulkeler`), site settings (`/ayarlar`), Instagram follower sync state (`/instagram`), and battle history (`/battle_history`), but have zero write access anywhere.
 3. **Strict Schema & Bounds**: Every string field enforces explicit `.size()` bounds; numeric counts enforce finite non-negative bounds; colors enforce hex `#RRGGBB` regex; document IDs enforce `^[a-zA-Z0-9_\-]+$` and `<= 128` chars.
 4. **No Shadow Fields**: Every `create` checks `keys().hasAll(...) && keys().hasOnly(...)`; every `update` uses `affectedKeys().hasOnly(...)` combined with `isValid[Entity](incoming())`.
+5. **Hashed Password Key Isolation**: `/admin_keys/{keyId}` forbids `list` completely and permits `get` only on exact 64-character lowercase hex SHA-256 digests (`^[a-f0-9]{64}$`); only verified admins (`isAdmin()`) may create, update, or delete password keys. `/admin_guvenlik/status` exposes only a boolean `hasDatabasePassword` flag and restricts writes strictly to `isAdmin()`.
 
 ## 2. "Dirty Dozen" Adversarial Payloads (Must Return PERMISSION_DENIED)
 1. Unauthenticated write to `/savaslar/active` (`{ homeSoldiers: 999999 }`)
@@ -19,3 +20,5 @@
 10. Document ID poisoning (`/ulkeler/../../adminler/x` or 500-char ID)
 11. Unauthenticated deletion of `/battle_history/rec1`
 12. Invalid `soldiersPerFollower` (`0` or `999999`) on `/ayarlar/global`
+13. Listing `/admin_keys` to enumerate hashed password documents
+14. Unauthenticated write or non-admin write to `/admin_keys/{hash}` or `/admin_guvenlik/status`

@@ -3,6 +3,7 @@ import { signInWithPopup, signOut, User } from 'firebase/auth';
 import {
   Activity,
   Clock,
+  Database,
   Film,
   Flag,
   Globe,
@@ -25,17 +26,20 @@ import {
 import { FEATURED_COUNTRY_CODES, MODEL_TYPE_LABELS } from '../data/countries';
 import {
   addBattleHistory,
+  checkDatabasePasswordStatus,
   DEFAULT_BATTLE,
   DEFAULT_INSTAGRAM,
   deleteAdminRecord,
   removeCountry,
   saveActiveBattle,
+  saveAdminPasswordToDatabase,
   saveAdminRecord,
   saveCountry,
   saveInstagramSync,
   saveSiteSettings,
   setAdminSessionToken,
   subscribeAdmins,
+  verifyAdminPasswordInDatabase,
 } from '../services/battleStore';
 import { auth, googleProvider } from '../services/firebase';
 import {
@@ -104,12 +108,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 }) => {
   // Auth & Server Session State (kept strictly in React memory)
   const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [hasDbPassword, setHasDbPassword] = useState<boolean | null>(null);
   const [needsInitialSetup, setNeedsInitialSetup] = useState<boolean>(false);
   const [configuredViaEnv, setConfiguredViaEnv] = useState<boolean>(false);
   const [passwordInput, setPasswordInput] = useState('');
   const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
   const [authError, setAuthError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
+  const [dbPasswordSaving, setDbPasswordSaving] = useState(false);
 
   // Dashboard State
   const [activeTab, setActiveTab] = useState<AdminTab>('control');
@@ -206,8 +212,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setDefaultCamDraft(settings.defaultCamera);
   }, [settings]);
 
-  // Check server admin setup status
+  // Check Firestore DB password status and server admin setup status
   useEffect(() => {
+    checkDatabasePasswordStatus().then(setHasDbPassword);
     fetch('/api/admin/status')
       .then(async (r) => {
         const { data } = await safeReadJson<{ needsInitialSetup?: boolean; configuredViaEnv?: boolean }>(r);
@@ -313,6 +320,61 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     };
   }, [battle.status, sessionToken]);
 
+  const syncOptionalServerSession = async (
+    verifiedPassword: string,
+    activeUser: User | null
+  ): Promise<string | null> => {
+    try {
+      if (activeUser) {
+        const idToken = await activeUser.getIdToken(true).catch(() => '');
+        if (idToken) {
+          const syncRes = await fetch('/api/admin/sync-db-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken, newPassword: verifiedPassword }),
+          }).catch(() => null);
+          if (syncRes && syncRes.ok) {
+            const { data } = await safeReadJson<{ sessionToken?: string }>(syncRes);
+            if (data?.sessionToken) return data.sessionToken;
+          }
+          const fbRes = await fetch('/api/admin/firebase-session', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken }),
+          }).catch(() => null);
+          if (fbRes && fbRes.ok) {
+            const { data } = await safeReadJson<{ sessionToken?: string }>(fbRes);
+            if (data?.sessionToken) return data.sessionToken;
+          }
+        }
+      }
+
+      const loginRes = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: verifiedPassword }),
+      }).catch(() => null);
+
+      if (loginRes && loginRes.ok) {
+        const { data } = await safeReadJson<{ sessionToken?: string }>(loginRes);
+        if (data?.sessionToken) return data.sessionToken;
+      } else if (loginRes && loginRes.status === 428) {
+        const claimRes = await fetch('/api/admin/claim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: verifiedPassword }),
+        }).catch(() => null);
+        if (claimRes && claimRes.ok) {
+          const { data } = await safeReadJson<{ sessionToken?: string }>(claimRes);
+          if (data?.sessionToken) return data.sessionToken;
+        }
+      }
+    } catch {
+      // Server session is optional when Firestore DB verified the password
+    }
+    return null;
+  };
+
   const handleFirebaseSignIn = async () => {
     setAuthError('');
     try {
@@ -326,6 +388,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         }).catch(() => {});
+
+        if (sessionToken.startsWith('db:')) {
+          const idToken = await cred.user.getIdToken(true).catch(() => '');
+          if (idToken) {
+            const res = await fetch('/api/admin/firebase-session', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ idToken }),
+            }).catch(() => null);
+            if (res && res.ok) {
+              const { data } = await safeReadJson<{ sessionToken?: string }>(res);
+              if (data?.sessionToken) {
+                setAdminSessionToken(data.sessionToken);
+                setSessionToken(data.sessionToken);
+              }
+            }
+          }
+        }
         notify('Firebase bulut senkronizasyonu bağlandı.');
       }
     } catch (err) {
@@ -343,12 +423,51 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setAuthError('Lütfen yönetici şifresini girin.');
       return;
     }
-    if (needsInitialSetup && passwordInput !== confirmPasswordInput) {
+    const isInitialDbBootstrap = hasDbPassword === false && needsInitialSetup;
+    if (isInitialDbBootstrap && passwordInput !== confirmPasswordInput) {
       setAuthError('Şifreler birbiriyle eşleşmiyor.');
       return;
     }
     setAuthLoading(true);
     try {
+      // 1) Primary verification against Cloud Firestore (admin_keys)
+      const dbCheck = await verifyAdminPasswordInDatabase(passwordInput);
+      setHasDbPassword(dbCheck.hasDatabasePassword);
+
+      if (dbCheck.matched) {
+        const activeUser = firebaseUser || auth.currentUser;
+        const serverToken = await syncOptionalServerSession(passwordInput, activeUser);
+        if (serverToken) {
+          setAdminSessionToken(serverToken);
+          setSessionToken(serverToken);
+        } else {
+          setAdminSessionToken(null);
+          setSessionToken(`db:${dbCheck.keyHash}`);
+        }
+        setNeedsInitialSetup(false);
+        setPasswordInput('');
+        setConfirmPasswordInput('');
+
+        if (activeUser) {
+          await saveAdminRecord({
+            uid: activeUser.uid,
+            email: activeUser.email || '',
+            displayName: activeUser.displayName || 'Yönetici',
+            role: 'superadmin',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }).catch(() => {});
+        }
+        return;
+      }
+
+      // 2) If Firestore already holds an authoritative DB password, reject mismatched passwords immediately
+      if (dbCheck.hasDatabasePassword) {
+        setAuthError('Girilen şifre veritabanındaki yönetici şifresi ile eşleşmiyor.');
+        return;
+      }
+
+      // 3) No password in Firestore yet: initial bootstrap via server check + auto-save if Google admin is connected
       const idToken = firebaseUser ? await firebaseUser.getIdToken(true).catch(() => undefined) : undefined;
       const endpoint = needsInitialSetup ? '/api/admin/claim' : '/api/admin/login';
       const res = await fetch(endpoint, {
@@ -366,32 +485,40 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         return;
       }
       if (!data) {
-        setAuthError(`Sunucu API yanıtı geçersiz (HTTP ${res.status}). Lütfen sayfayı yenileyip tekrar deneyin.`);
+        setAuthError(`Doğrulama yanıtı geçersiz (HTTP ${res.status}). Lütfen sayfayı yenileyip tekrar deneyin.`);
         return;
       }
       if (!res.ok || !data.sessionToken) {
         setAuthError(data.error || 'Yönetici doğrulaması başarısız.');
         return;
       }
+
       setAdminSessionToken(data.sessionToken);
       setSessionToken(data.sessionToken);
       setNeedsInitialSetup(false);
-      setPasswordInput('');
-      setConfirmPasswordInput('');
 
-      // Optionally sync admin record if Firebase Auth is signed in
-      if (firebaseUser) {
+      const activeUser = firebaseUser || auth.currentUser;
+      if (activeUser) {
+        await saveAdminPasswordToDatabase(passwordInput)
+          .then(() => {
+            setHasDbPassword(true);
+            notify('Yönetici şifresi Cloud Firestore veritabanına kaydedildi.');
+          })
+          .catch(() => {});
         await saveAdminRecord({
-          uid: firebaseUser.uid,
-          email: firebaseUser.email || '',
-          displayName: firebaseUser.displayName || 'Yönetici',
+          uid: activeUser.uid,
+          email: activeUser.email || '',
+          displayName: activeUser.displayName || 'Yönetici',
           role: 'superadmin',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         }).catch(() => {});
       }
+
+      setPasswordInput('');
+      setConfirmPasswordInput('');
     } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Sunucu bağlantı hatası.');
+      setAuthError(err instanceof Error ? err.message : 'Veritabanı doğrulama hatası.');
     } finally {
       setAuthLoading(false);
     }
@@ -399,7 +526,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleLogout = async () => {
     setAdminSessionToken(null);
-    if (sessionToken) {
+    if (sessionToken && !sessionToken.startsWith('db:')) {
       await fetch('/api/admin/logout', {
         method: 'POST',
         headers: { Authorization: `Bearer ${sessionToken}` },
@@ -715,28 +842,43 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const cleanCount = Math.max(0, Math.round(Number(manualFollowersDraft) || 0));
     setSyncLoading(true);
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${sessionToken}`,
-      };
-      if (firebaseUser) {
-        const idToken = await firebaseUser.getIdToken().catch(() => '');
-        if (idToken) headers['X-Firebase-Id-Token'] = idToken;
+      let updatedSync: InstagramSync | null = null;
+      if (!sessionToken.startsWith('db:')) {
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionToken}`,
+        };
+        if (firebaseUser) {
+          const idToken = await firebaseUser.getIdToken().catch(() => '');
+          if (idToken) headers['X-Firebase-Id-Token'] = idToken;
+        }
+        const res = await fetch('/api/instagram/manual', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            followers: cleanCount,
+            handle: settings.instagramHandle,
+          }),
+        }).catch(() => null);
+        if (res && res.ok) {
+          const { data } = await safeReadJson<InstagramSync & { error?: string }>(res);
+          if (data) updatedSync = data;
+        }
       }
-      const res = await fetch('/api/instagram/manual', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
+
+      if (!updatedSync) {
+        updatedSync = {
+          handle: settings.instagramHandle || instagram.handle,
           followers: cleanCount,
-          handle: settings.instagramHandle,
-        }),
-      });
-      const { data } = await safeReadJson<InstagramSync & { error?: string }>(res);
-      if (!res.ok || !data) {
-        notify(data?.error || 'Takipçi sayısı güncellenemedi.');
-        return;
+          lastValidFollowers: cleanCount,
+          syncStatus: 'ok',
+          source: 'admin_manual',
+          lastError: '',
+          lastUpdatedAt: new Date().toISOString(),
+        };
       }
-      await saveInstagramSync(data);
+
+      await saveInstagramSync(updatedSync);
       if (!battle.manualOverrideBlue) {
         const autoSoldiers = cleanCount * soldiersPerFollowerDraft;
         await saveActiveBattle({
@@ -809,35 +951,69 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!sessionToken) return;
+    if (newPwd.length < 6 || newPwd.length > 128) {
+      notify('Yeni şifre en az 6, en fazla 128 karakter olmalıdır.');
+      return;
+    }
     if (newPwd !== newPwdConfirm) {
       notify('Yeni şifreler eşleşmiyor.');
       return;
     }
+
+    setDbPasswordSaving(true);
     try {
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${sessionToken}`,
-      };
-      if (firebaseUser) {
-        const idToken = await firebaseUser.getIdToken().catch(() => '');
-        if (idToken) headers['X-Firebase-Id-Token'] = idToken;
+      if (hasDbPassword === true) {
+        if (!currentPwd) {
+          notify('Lütfen mevcut yönetici şifresini girin.');
+          return;
+        }
+        const check = await verifyAdminPasswordInDatabase(currentPwd);
+        if (!check.matched) {
+          notify('Mevcut şifre veritabanındaki kayıt ile eşleşmiyor.');
+          return;
+        }
       }
-      const res = await fetch('/api/admin/change-password', {
+
+      let activeUser = firebaseUser || auth.currentUser;
+      if (!activeUser) {
+        const cred = await signInWithPopup(auth, googleProvider);
+        activeUser = cred.user;
+      }
+
+      await saveAdminPasswordToDatabase(newPwd, hasDbPassword ? currentPwd : undefined);
+      setHasDbPassword(true);
+
+      const idToken = activeUser ? await activeUser.getIdToken(true).catch(() => '') : '';
+      const syncRes = await fetch('/api/admin/sync-db-password', {
         method: 'POST',
-        headers,
-        body: JSON.stringify({ currentPassword: currentPwd, newPassword: newPwd }),
-      });
-      const { data } = await safeReadJson<{ message?: string; error?: string }>(res);
-      if (!res.ok || !data) {
-        notify(data?.error || 'Şifre güncellenemedi.');
-        return;
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken && !sessionToken.startsWith('db:') ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        body: JSON.stringify({ ...(idToken ? { idToken } : {}), newPassword: newPwd }),
+      }).catch(() => null);
+
+      if (syncRes && syncRes.ok) {
+        const { data } = await safeReadJson<{ sessionToken?: string }>(syncRes);
+        if (data?.sessionToken) {
+          setAdminSessionToken(data.sessionToken);
+          setSessionToken(data.sessionToken);
+        }
       }
+
       setCurrentPwd('');
       setNewPwd('');
       setNewPwdConfirm('');
-      notify(data.message || 'Şifre başarıyla güncellendi.');
+      notify('Yönetici şifresi Cloud Firestore veritabanına kaydedildi.');
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Şifre değiştirme hatası.');
+      const rawMsg = err instanceof Error ? err.message : '';
+      if (rawMsg.includes('permission') || rawMsg.includes('PERMISSION_DENIED') || rawMsg.startsWith('{')) {
+        notify('Yetkili yönetici Google hesabı doğrulanamadı veya Firestore yazma izni reddedildi.');
+      } else {
+        notify(rawMsg || 'Şifre veritabanına kaydedilemedi.');
+      }
+    } finally {
+      setDbPasswordSaving(false);
     }
   };
 
@@ -873,8 +1049,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return Array.from(map.values());
   }, [history]);
 
-  // GATE: Password-Only Protected Login Screen
+  // GATE: Password-Only Protected Login Screen (Verified against Cloud Firestore)
   if (!sessionToken) {
+    const showInitialSetupForm = hasDbPassword === false && needsInitialSetup;
     return (
       <div className="min-h-[100dvh] bg-[#070B12] text-slate-100 flex items-center justify-center p-4">
         <div className="w-full max-w-sm rounded-2xl bg-[#0D1422] border border-slate-800 p-5 sm:p-7 shadow-2xl space-y-5">
@@ -884,14 +1061,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
             <h1 className="font-display text-xl sm:text-2xl font-bold text-white">Yönetici Paneli</h1>
             <p className="text-xs text-slate-400">
-              Giriş yapmak için yönetici şifresini girin.
+              {hasDbPassword
+                ? 'Şifre Cloud Firestore veritabanı ile doğrulanır.'
+                : 'Giriş yapmak için yönetici şifresini girin.'}
             </p>
           </div>
 
           <form onSubmit={handleAdminAuthSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                {needsInitialSetup
+                {showInitialSetupForm
                   ? 'İlk Kurulum Yönetici Şifresini Belirleyin'
                   : 'Yönetici Şifresi'}
               </label>
@@ -904,14 +1083,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 placeholder="Şifreyi girin"
                 className="w-full rounded-lg bg-[#090E18] border border-slate-700 px-3.5 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-500"
               />
-              {needsInitialSetup && !configuredViaEnv && (
+              {showInitialSetupForm && !configuredViaEnv && (
                 <p className="mt-1.5 text-[11px] text-slate-400">
-                  İlk çalıştırma kurulumu: Belirlediğiniz şifre sunucuda şifrelenerek saklanacaktır.
+                  İlk çalıştırma kurulumu: Belirlediğiniz şifre veritabanında güvenle saklanacaktır.
                 </p>
               )}
             </div>
 
-            {needsInitialSetup && (
+            {showInitialSetupForm && (
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">
                   Şifre Tekrar
@@ -939,8 +1118,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               className="w-full min-h-[44px] py-2.5 px-4 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-sm font-semibold text-white transition-colors"
             >
               {authLoading
-                ? 'Doğrulanıyor...'
-                : needsInitialSetup
+                ? 'Veritabanında Doğrulanıyor...'
+                : showInitialSetupForm
                 ? 'Şifreyi Oluştur ve Panele Gir'
                 : 'Giriş Yap'}
             </button>
@@ -1019,6 +1198,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           ))}
         </div>
       </div>
+
+      {hasDbPassword === false && activeTab !== 'security' && (
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 pt-3">
+          <div className="rounded-lg bg-amber-950/50 border border-amber-500/40 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-200">
+            <span className="flex items-center gap-2">
+              <Database className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>Yönetici şifresi henüz Cloud Firestore veritabanına kaydedilmedi.</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setActiveTab('security')}
+              className="px-3 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 font-semibold text-amber-100 whitespace-nowrap"
+            >
+              Şifreyi Veritabanına Kaydet
+            </button>
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div className="max-w-7xl mx-auto px-3 sm:px-6 pt-3">
@@ -1962,29 +2159,50 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         {/* TAB 6: SECURITY & ADMINS */}
         {activeTab === 'security' && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-            {/* Password Change */}
+            {/* Password Save / Change in Firestore */}
             <form
               onSubmit={handleChangePassword}
               className="rounded-xl bg-[#0D1422] border border-slate-800 p-4 sm:p-6 space-y-3 sm:space-y-4"
             >
-              <div className="flex items-center gap-2">
-                <KeyRound className="w-4 h-4 text-sky-400" />
-                <h2 className="font-display text-sm sm:text-base font-bold text-white">Yönetici Şifresini Değiştir</h2>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <KeyRound className="w-4 h-4 text-sky-400 shrink-0" />
+                  <h2 className="font-display text-sm sm:text-base font-bold text-white">
+                    Yönetici Şifresini Veritabanına Kaydet / Güncelle
+                  </h2>
+                </div>
+                <span
+                  className={`text-[11px] font-medium px-2 py-0.5 rounded border ${
+                    hasDbPassword
+                      ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                      : 'bg-amber-950/40 border-amber-500/30 text-amber-300'
+                  }`}
+                >
+                  {hasDbPassword ? 'Firestore Kayıtlı' : 'Veritabanında Kayıt Yok'}
+                </span>
               </div>
 
-              <div>
-                <label className="block text-xs text-slate-400 mb-1">Mevcut Şifre</label>
-                <input
-                  type="password"
-                  required
-                  value={currentPwd}
-                  onChange={(e) => setCurrentPwd(e.target.value)}
-                  className="w-full rounded-lg bg-[#090E18] border border-slate-700 px-3 py-2 text-sm sm:text-xs text-white"
-                />
-              </div>
+              <p className="text-[11px] text-slate-400">
+                Şifre SHA-256 özeti olarak Cloud Firestore veritabanında saklanır ve girişler doğrudan veritabanı üzerinden doğrulanır.
+              </p>
+
+              {hasDbPassword === true && (
+                <div>
+                  <label className="block text-xs text-slate-400 mb-1">Mevcut Şifre</label>
+                  <input
+                    type="password"
+                    required
+                    value={currentPwd}
+                    onChange={(e) => setCurrentPwd(e.target.value)}
+                    className="w-full rounded-lg bg-[#090E18] border border-slate-700 px-3 py-2 text-sm sm:text-xs text-white"
+                  />
+                </div>
+              )}
 
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Yeni Şifre (En az 6 karakter)</label>
+                <label className="block text-xs text-slate-400 mb-1">
+                  {hasDbPassword ? 'Yeni Şifre (En az 6 karakter)' : 'Veritabanına Kaydedilecek Şifre (En az 6 karakter)'}
+                </label>
                 <input
                   type="password"
                   required
@@ -2009,9 +2227,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
               <button
                 type="submit"
-                className="w-full sm:w-auto px-4 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-semibold text-white transition-colors"
+                disabled={dbPasswordSaving}
+                className="w-full sm:w-auto px-4 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-xs font-semibold text-white transition-colors"
               >
-                Şifreyi Güncelle
+                {dbPasswordSaving
+                  ? 'Veritabanına Kaydediliyor...'
+                  : hasDbPassword
+                  ? 'Şifreyi Veritabanında Güncelle'
+                  : 'Şifreyi Veritabanına Kaydet'}
               </button>
             </form>
 

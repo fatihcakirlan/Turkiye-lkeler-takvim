@@ -163,12 +163,44 @@
         "durationSeconds",
         "createdAt"
       ]
+    },
+    "AdminPasswordKey": {
+      "title": "AdminPasswordKey",
+      "description": "One-way SHA-256 hashed admin credential entry keyed by hash ID for database password verification.",
+      "type": "object",
+      "properties": {
+        "keyHash": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "label": { "type": "string", "maxLength": 32 },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["keyHash", "createdBy", "createdAt", "updatedAt"]
+    },
+    "AdminSecurityStatus": {
+      "title": "AdminSecurityStatus",
+      "description": "Non-secret status flag indicating whether an admin password key is registered in Cloud Firestore.",
+      "type": "object",
+      "properties": {
+        "hasDatabasePassword": { "type": "boolean" },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["hasDatabasePassword", "updatedBy", "updatedAt"]
     }
   },
   "firestore": {
     "/adminler/{adminId}": {
       "schema": { "$ref": "#/entities/AdminUser" },
       "description": "Administrator accounts and roles. Strictly private to admins."
+    },
+    "/admin_keys/{keyId}": {
+      "schema": { "$ref": "#/entities/AdminPasswordKey" },
+      "description": "Hashed admin password verification keys. Direct get by exact 64-char hash only; listing forbidden."
+    },
+    "/admin_guvenlik/{docId}": {
+      "schema": { "$ref": "#/entities/AdminSecurityStatus" },
+      "description": "Publicly readable non-secret status indicating if a database admin password exists."
     },
     "/ulkeler/{countryId}": {
       "schema": { "$ref": "#/entities/Country" },

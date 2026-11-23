@@ -497,6 +497,58 @@ export function createApiApp(): express.Express {
     res.json({ ok: true, message: 'Yönetici şifresi güvenli şekilde güncellendi.' });
   });
 
+  app.post('/api/admin/firebase-session', async (req, res) => {
+    const { idToken } = req.body as { idToken?: string };
+    if (typeof idToken !== 'string' || idToken.length === 0) {
+      res.status(400).json({ error: 'Firebase kimlik belirteci eksik.' });
+      return;
+    }
+    const verified = await verifyFirebaseAdminCaller(idToken);
+    if (!verified) {
+      res.status(403).json({ error: 'Yetkili yönetici Firebase hesabı doğrulanamadı.' });
+      return;
+    }
+    const sessionToken = signSessionToken(verified.uid, verified.email);
+    res.json({
+      ok: true,
+      sessionToken,
+      email: verified.email,
+      uid: verified.uid,
+    });
+  });
+
+  app.post('/api/admin/sync-db-password', async (req, res) => {
+    const { idToken, newPassword } = req.body as {
+      idToken?: string;
+      newPassword?: string;
+    };
+    const authHeader = req.headers.authorization;
+    const bearer = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    const validSession = bearer ? verifySessionToken(bearer) : null;
+    const verifiedFirebase =
+      !validSession && typeof idToken === 'string' && idToken.length > 0
+        ? await verifyFirebaseAdminCaller(idToken)
+        : null;
+
+    if (!validSession && !verifiedFirebase) {
+      res.status(401).json({ error: 'Yetkili oturum doğrulanamadı.' });
+      return;
+    }
+    if (typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 128) {
+      res.status(400).json({ error: 'Şifre 6 ile 128 karakter arasında olmalıdır.' });
+      return;
+    }
+    const hashed = hashPasswordScrypt(newPassword);
+    activeAdminPassword = { ...hashed, source: 'claimed' };
+    const sessionToken =
+      validSession && bearer
+        ? bearer
+        : verifiedFirebase
+        ? signSessionToken(verifiedFirebase.uid, verifiedFirebase.email)
+        : undefined;
+    res.json({ ok: true, ...(sessionToken ? { sessionToken } : {}) });
+  });
+
   app.post('/api/admin/logout', (req, res) => {
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) {
