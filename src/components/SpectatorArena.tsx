@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Clock, Shield, Trophy, UserPlus } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Clock, Shield, Trophy, UserPlus, Volume2, VolumeX } from 'lucide-react';
+import { createCoolCalmMusicEngine } from '../services/ambientMusic';
 import { ActiveBattle, InstagramSync, SiteSettings } from '../types/battle';
 import { Battlefield3D } from './Battlefield3D';
 import { CountryFlag } from './CountryFlag';
@@ -79,6 +80,62 @@ export const SpectatorArena: React.FC<SpectatorArenaProps> = ({
     oppRem: battle.opponentRemaining,
     winner: battle.winnerSide,
   });
+
+  const [isMusicMuted, setIsMusicMuted] = useState(false);
+  const [isMusicActive, setIsMusicActive] = useState(false);
+  const musicRef = useRef<ReturnType<typeof createCoolCalmMusicEngine> | null>(null);
+  const isMutedRef = useRef(false);
+  isMutedRef.current = isMusicMuted;
+
+  useEffect(() => {
+    const engine = createCoolCalmMusicEngine();
+    musicRef.current = engine;
+
+    const tryStart = async () => {
+      if (isMutedRef.current) return;
+      const ok = await engine.start();
+      if (ok) {
+        setIsMusicActive(true);
+        window.removeEventListener('pointerdown', onFirstInteraction);
+        window.removeEventListener('keydown', onFirstInteraction);
+        window.removeEventListener('touchstart', onFirstInteraction);
+      }
+    };
+
+    const onFirstInteraction = () => {
+      void tryStart();
+    };
+
+    void tryStart();
+    window.addEventListener('pointerdown', onFirstInteraction, { passive: true });
+    window.addEventListener('keydown', onFirstInteraction, { passive: true });
+    window.addEventListener('touchstart', onFirstInteraction, { passive: true });
+
+    return () => {
+      window.removeEventListener('pointerdown', onFirstInteraction);
+      window.removeEventListener('keydown', onFirstInteraction);
+      window.removeEventListener('touchstart', onFirstInteraction);
+      engine.stop();
+      musicRef.current = null;
+    };
+  }, []);
+
+  const handleToggleMusic = async () => {
+    const engine = musicRef.current;
+    if (!engine) return;
+
+    if (!isMusicActive) {
+      engine.setMuted(false);
+      setIsMusicMuted(false);
+      const ok = await engine.start();
+      setIsMusicActive(ok);
+      return;
+    }
+
+    const nextMuted = !isMusicMuted;
+    setIsMusicMuted(nextMuted);
+    engine.setMuted(nextMuted);
+  };
 
   useEffect(() => {
     setLocalDisplay({
@@ -221,15 +278,38 @@ export const SpectatorArena: React.FC<SpectatorArenaProps> = ({
               </p>
             </div>
 
-            <a
-              href={instagramFollowUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="pointer-events-auto inline-flex items-center justify-center gap-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 min-h-[36px] px-3.5 py-1.5 text-xs font-semibold text-white transition-colors whitespace-nowrap shrink-0 shadow-sm"
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              <span>Asker Ol</span>
-            </a>
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => void handleToggleMusic()}
+                aria-label={isMusicMuted ? 'Müziği Aç' : 'Müziği Kapat'}
+                title={isMusicMuted ? 'Müziği Aç' : 'Müziği Kapat'}
+                className={`pointer-events-auto inline-flex items-center justify-center gap-1 rounded-lg border min-h-[36px] px-2.5 py-1.5 text-xs font-medium transition-colors whitespace-nowrap ${
+                  isMusicMuted
+                    ? 'bg-slate-900/90 border-slate-700 text-slate-400 hover:text-white'
+                    : 'bg-sky-950/50 border-sky-500/35 text-sky-200 hover:bg-sky-900/50'
+                }`}
+              >
+                {isMusicMuted ? (
+                  <VolumeX className="w-3.5 h-3.5 shrink-0" />
+                ) : (
+                  <Volume2 className="w-3.5 h-3.5 shrink-0" />
+                )}
+                <span className="hidden xs:inline sm:inline">
+                  {isMusicMuted ? 'Sessiz' : 'Müzik'}
+                </span>
+              </button>
+
+              <a
+                href={instagramFollowUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="pointer-events-auto inline-flex items-center justify-center gap-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 min-h-[36px] px-3.5 py-1.5 text-xs font-semibold text-white transition-colors whitespace-nowrap shadow-sm"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Asker Ol</span>
+              </a>
+            </div>
           </div>
 
           {/* Live Scheduled Battle Countdown Strip */}

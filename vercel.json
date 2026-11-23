@@ -4,8 +4,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "functions": {
-    "api/index.ts": {
-      "maxDuration": 30,
+    "api/**/*.ts": {
       "includeFiles": "firebase-applet-config.json"
     }
   },
@@ -15,7 +14,7 @@
       "destination": "/api/index"
     },
     {
-      "source": "/((?!api/).*)",
+      "source": "/(.*)",
       "destination": "/index.html"
     }
   ],
@@ -30,7 +29,7 @@
       ]
     },
     {
-      "source": "/((?!api/).*)",
+      "source": "/(.*)",
       "headers": [
         {
           "key": "Cross-Origin-Opener-Policy",

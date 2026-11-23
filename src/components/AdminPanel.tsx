@@ -27,6 +27,7 @@ import { FEATURED_COUNTRY_CODES, MODEL_TYPE_LABELS } from '../data/countries';
 import {
   addBattleHistory,
   checkDatabasePasswordStatus,
+  checkFirestoreAdminConnection,
   DEFAULT_BATTLE,
   DEFAULT_INSTAGRAM,
   deleteAdminRecord,
@@ -40,6 +41,7 @@ import {
   setAdminSessionToken,
   subscribeAdmins,
   verifyAdminPasswordInDatabase,
+  verifyFirebaseAdminUser,
 } from '../services/battleStore';
 import { auth, googleProvider } from '../services/firebase';
 import {
@@ -76,6 +78,12 @@ function toLocalDateTimeInputValue(iso?: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function parseLocalDateTimeInput(val: string): string {
+  if (!val) return '';
+  const d = new Date(val);
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString();
+}
+
 function formatAdminCountdown(targetIso?: string): string {
   if (!targetIso) return '';
   const targetMs = Date.parse(targetIso);
@@ -108,6 +116,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 }) => {
   // Auth & Server Session State (kept strictly in React memory)
   const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [firestoreConnected, setFirestoreConnected] = useState<boolean | null>(null);
   const [hasDbPassword, setHasDbPassword] = useState<boolean | null>(null);
   const [needsInitialSetup, setNeedsInitialSetup] = useState<boolean>(false);
   const [configuredViaEnv, setConfiguredViaEnv] = useState<boolean>(false);
@@ -212,9 +221,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setDefaultCamDraft(settings.defaultCamera);
   }, [settings]);
 
-  // Check Firestore DB password status and server admin setup status
+  // Check Firestore connectivity, DB password status, and optional server status
   useEffect(() => {
-    checkDatabasePasswordStatus().then(setHasDbPassword);
+    checkFirestoreAdminConnection().then(({ firestoreConnected: connected, hasDatabasePassword }) => {
+      setFirestoreConnected(connected);
+      setHasDbPassword(hasDatabasePassword);
+    });
     fetch('/api/admin/status')
       .then(async (r) => {
         const { data } = await safeReadJson<{ needsInitialSetup?: boolean; configuredViaEnv?: boolean }>(r);
@@ -416,6 +428,77 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  const handleFirebaseDirectLogin = async () => {
+    setAuthError('');
+    setAuthLoading(true);
+    try {
+      let activeUser = firebaseUser || auth.currentUser;
+      if (!activeUser) {
+        const cred = await signInWithPopup(auth, googleProvider);
+        activeUser = cred.user;
+      }
+      const isAuthorized = await verifyFirebaseAdminUser(activeUser);
+      if (!isAuthorized || !activeUser) {
+        await signOut(auth).catch(() => {});
+        setAuthError('Bu Google hesabı Firebase veritabanında yetkili yönetici olarak kayıtlı değil.');
+        return;
+      }
+
+      setFirestoreConnected(true);
+
+      // If no DB password exists yet and user typed one (>= 6 chars), save it to Firestore automatically
+      if (hasDbPassword === false && passwordInput.trim().length >= 6) {
+        await saveAdminPasswordToDatabase(passwordInput).catch(() => {});
+        setHasDbPassword(true);
+      }
+
+      await saveAdminRecord({
+        uid: activeUser.uid,
+        email: activeUser.email || '',
+        displayName: activeUser.displayName || 'Yönetici',
+        role: 'superadmin',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
+
+      const idToken = await activeUser.getIdToken(true).catch(() => '');
+      let serverToken: string | null = null;
+      if (idToken) {
+        const fbRes = await fetch('/api/admin/firebase-session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken }),
+        }).catch(() => null);
+        if (fbRes && fbRes.ok) {
+          const { data } = await safeReadJson<{ sessionToken?: string }>(fbRes);
+          if (data?.sessionToken) serverToken = data.sessionToken;
+        }
+      }
+
+      if (serverToken) {
+        setAdminSessionToken(serverToken);
+        setSessionToken(serverToken);
+      } else {
+        setAdminSessionToken(null);
+        setSessionToken(`db:firebase:${activeUser.uid}`);
+      }
+      setNeedsInitialSetup(false);
+      setPasswordInput('');
+      setConfirmPasswordInput('');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('popup-closed-by-user')) {
+        setAuthError('Google penceresi kapatıldı. Lütfen tekrar deneyin.');
+      } else if (msg.includes('popup-blocked')) {
+        setAuthError('Tarayıcı açılır pencereyi engelledi. Lütfen açılır pencerelere izin verin.');
+      } else {
+        setAuthError(msg ? `Firebase giriş hatası: ${msg}` : 'Firebase doğrulaması başarısız.');
+      }
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
   const handleAdminAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
@@ -423,13 +506,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setAuthError('Lütfen yönetici şifresini girin.');
       return;
     }
-    const isInitialDbBootstrap = hasDbPassword === false && needsInitialSetup;
-    if (isInitialDbBootstrap && passwordInput !== confirmPasswordInput) {
-      setAuthError('Şifreler birbiriyle eşleşmiyor.');
-      return;
-    }
+
     setAuthLoading(true);
     try {
+      // Ensure fresh Firestore status even if user clicked before mount probe completed
+      const dbHasPasswordNow =
+        hasDbPassword !== null ? hasDbPassword : await checkDatabasePasswordStatus();
+      setHasDbPassword(dbHasPasswordNow);
+      setFirestoreConnected(true);
+
+      const isInitialDbSetup = !dbHasPasswordNow;
+      if (isInitialDbSetup && confirmPasswordInput && passwordInput !== confirmPasswordInput) {
+        setAuthError('Şifreler birbiriyle eşleşmiyor.');
+        return;
+      }
+
       // 1) Primary verification against Cloud Firestore (admin_keys)
       const dbCheck = await verifyAdminPasswordInDatabase(passwordInput);
       setHasDbPassword(dbCheck.hasDatabasePassword);
@@ -463,11 +554,59 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       // 2) If Firestore already holds an authoritative DB password, reject mismatched passwords immediately
       if (dbCheck.hasDatabasePassword) {
-        setAuthError('Girilen şifre veritabanındaki yönetici şifresi ile eşleşmiyor.');
+        setAuthError('Girilen şifre Firebase veritabanındaki yönetici şifresi ile eşleşmiyor.');
         return;
       }
 
-      // 3) No password in Firestore yet: initial bootstrap via server check + auto-save if Google admin is connected
+      // 3) No password stored in Cloud Firestore yet:
+      //    First check if already signed in or try Firebase Google Admin setup directly against Firestore
+      if (passwordInput.length >= 6) {
+        let activeUser = firebaseUser || auth.currentUser;
+        if (!activeUser) {
+          try {
+            const cred = await signInWithPopup(auth, googleProvider);
+            activeUser = cred.user;
+          } catch {
+            // Popup blocked or closed: fall through to optional server bootstrap below
+            activeUser = null;
+          }
+        }
+
+        if (activeUser) {
+          const isAuthorized = await verifyFirebaseAdminUser(activeUser);
+          if (!isAuthorized) {
+            await signOut(auth).catch(() => {});
+            setAuthError('Bu Google hesabı Firebase veritabanında yetkili yönetici değil.');
+            return;
+          }
+          await saveAdminPasswordToDatabase(passwordInput);
+          setHasDbPassword(true);
+          await saveAdminRecord({
+            uid: activeUser.uid,
+            email: activeUser.email || '',
+            displayName: activeUser.displayName || 'Yönetici',
+            role: 'superadmin',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }).catch(() => {});
+
+          const serverToken = await syncOptionalServerSession(passwordInput, activeUser);
+          if (serverToken) {
+            setAdminSessionToken(serverToken);
+            setSessionToken(serverToken);
+          } else {
+            setAdminSessionToken(null);
+            setSessionToken(`db:firebase:${activeUser.uid}`);
+          }
+          setNeedsInitialSetup(false);
+          setPasswordInput('');
+          setConfirmPasswordInput('');
+          notify('Yönetici şifresi Cloud Firestore veritabanına kaydedildi.');
+          return;
+        }
+      }
+
+      // 4) Fallback if Firebase popup wasn't used and server endpoint is available
       const idToken = firebaseUser ? await firebaseUser.getIdToken(true).catch(() => undefined) : undefined;
       const endpoint = needsInitialSetup ? '/api/admin/claim' : '/api/admin/login';
       const res = await fetch(endpoint, {
@@ -477,48 +616,32 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           ...(idToken ? { idToken } : {}),
           password: passwordInput,
         }),
-      });
+      }).catch(() => null);
+
+      if (!res) {
+        setAuthError(
+          'Şifreyi Firebase veritabanına ilk kez kaydetmek için aşağıdaki "Google ile Firebase\'den Doğrula" butonunu kullanın.'
+        );
+        return;
+      }
       const { data } = await safeReadJson<{ ok?: boolean; sessionToken?: string; error?: string }>(res);
       if (res.status === 428) {
         setNeedsInitialSetup(true);
-        setAuthError(data?.error || 'İlk kurulum için lütfen bir yönetici şifresi belirleyin.');
+        setAuthError('İlk kurulum için lütfen şifreyi belirleyip Google yönetici hesabınızla veritabanına kaydedin.');
         return;
       }
-      if (!data) {
-        setAuthError(`Doğrulama yanıtı geçersiz (HTTP ${res.status}). Lütfen sayfayı yenileyip tekrar deneyin.`);
-        return;
-      }
-      if (!res.ok || !data.sessionToken) {
-        setAuthError(data.error || 'Yönetici doğrulaması başarısız.');
+      if (!data || !res.ok || !data.sessionToken) {
+        setAuthError(data?.error || 'Yönetici doğrulaması başarısız. Firebase ile bağlanmayı deneyin.');
         return;
       }
 
       setAdminSessionToken(data.sessionToken);
       setSessionToken(data.sessionToken);
       setNeedsInitialSetup(false);
-
-      const activeUser = firebaseUser || auth.currentUser;
-      if (activeUser) {
-        await saveAdminPasswordToDatabase(passwordInput)
-          .then(() => {
-            setHasDbPassword(true);
-            notify('Yönetici şifresi Cloud Firestore veritabanına kaydedildi.');
-          })
-          .catch(() => {});
-        await saveAdminRecord({
-          uid: activeUser.uid,
-          email: activeUser.email || '',
-          displayName: activeUser.displayName || 'Yönetici',
-          role: 'superadmin',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }).catch(() => {});
-      }
-
       setPasswordInput('');
       setConfirmPasswordInput('');
     } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Veritabanı doğrulama hatası.');
+      setAuthError(err instanceof Error ? err.message : 'Firebase veritabanı doğrulama hatası.');
     } finally {
       setAuthLoading(false);
     }
@@ -1049,29 +1172,51 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return Array.from(map.values());
   }, [history]);
 
-  // GATE: Password-Only Protected Login Screen (Verified against Cloud Firestore)
+  // GATE: Firebase Database Protected Login Screen
   if (!sessionToken) {
-    const showInitialSetupForm = hasDbPassword === false && needsInitialSetup;
+    const showInitialSetupForm = hasDbPassword === false;
     return (
       <div className="min-h-[100dvh] bg-[#070B12] text-slate-100 flex items-center justify-center p-4">
         <div className="w-full max-w-sm rounded-2xl bg-[#0D1422] border border-slate-800 p-5 sm:p-7 shadow-2xl space-y-5">
-          <div className="space-y-1.5 text-center">
+          <div className="space-y-2 text-center">
             <div className="mx-auto w-11 h-11 rounded-xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center">
               <Lock className="w-5 h-5 text-sky-400" />
             </div>
             <h1 className="font-display text-xl sm:text-2xl font-bold text-white">Yönetici Paneli</h1>
             <p className="text-xs text-slate-400">
               {hasDbPassword
-                ? 'Şifre Cloud Firestore veritabanı ile doğrulanır.'
-                : 'Giriş yapmak için yönetici şifresini girin.'}
+                ? 'Şifre doğrudan Firebase Firestore veritabanı ile doğrulanır.'
+                : 'İlk girişte şifreniz Firebase Firestore veritabanına kaydedilir.'}
             </p>
+            <div className="pt-1 flex justify-center">
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-medium ${
+                  firestoreConnected === false
+                    ? 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                    : hasDbPassword
+                    ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                    : 'bg-sky-950/40 border-sky-500/30 text-sky-300'
+                }`}
+              >
+                <Database className="w-3 h-3 shrink-0" />
+                <span>
+                  {firestoreConnected === null
+                    ? 'Firebase Veritabanı Kontrol Ediliyor...'
+                    : firestoreConnected === false
+                    ? 'Firebase Bağlantısı Bekleniyor'
+                    : hasDbPassword
+                    ? 'Firebase Veritabanı Bağlı · Şifre Kayıtlı'
+                    : 'Firebase Veritabanı Bağlı · İlk Kurulum'}
+                </span>
+              </span>
+            </div>
           </div>
 
           <form onSubmit={handleAdminAuthSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1.5">
                 {showInitialSetupForm
-                  ? 'İlk Kurulum Yönetici Şifresini Belirleyin'
+                  ? 'Firebase Veritabanına Kaydedilecek Şifre'
                   : 'Yönetici Şifresi'}
               </label>
               <input
@@ -1085,7 +1230,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               />
               {showInitialSetupForm && !configuredViaEnv && (
                 <p className="mt-1.5 text-[11px] text-slate-400">
-                  İlk çalıştırma kurulumu: Belirlediğiniz şifre veritabanında güvenle saklanacaktır.
+                  İlk kurulum: Google yönetici hesabınız doğrulandıktan sonra şifreniz Firebase veritabanına SHA-256 ile kaydedilir.
                 </p>
               )}
             </div>
@@ -1093,11 +1238,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             {showInitialSetupForm && (
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  Şifre Tekrar
+                  Şifre Tekrar (Opsiyonel)
                 </label>
                 <input
                   type="password"
-                  required
                   value={confirmPasswordInput}
                   onChange={(e) => setConfirmPasswordInput(e.target.value)}
                   placeholder="Şifreyi tekrar girin"
@@ -1118,12 +1262,32 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               className="w-full min-h-[44px] py-2.5 px-4 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-sm font-semibold text-white transition-colors"
             >
               {authLoading
-                ? 'Veritabanında Doğrulanıyor...'
+                ? 'Firebase Veritabanında Doğrulanıyor...'
                 : showInitialSetupForm
-                ? 'Şifreyi Oluştur ve Panele Gir'
-                : 'Giriş Yap'}
+                ? 'Firebase Veritabanına Kaydet ve Gir'
+                : 'Şifre ile Giriş Yap'}
             </button>
           </form>
+
+          <div className="relative flex items-center py-0.5">
+            <div className="flex-grow border-t border-slate-800" />
+            <span className="shrink mx-3 text-[11px] text-slate-500">veya</span>
+            <div className="flex-grow border-t border-slate-800" />
+          </div>
+
+          <button
+            type="button"
+            disabled={authLoading}
+            onClick={() => void handleFirebaseDirectLogin()}
+            className="w-full min-h-[42px] py-2 px-4 rounded-lg bg-[#090E18] hover:bg-slate-800/80 border border-slate-700 text-xs font-semibold text-slate-200 flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+          >
+            <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>
+              {firebaseUser
+                ? `Firebase Hesabı ile Gir (${firebaseUser.email})`
+                : "Google Yönetici Hesabı ile Firebase'den Doğrula"}
+            </span>
+          </button>
         </div>
       </div>
     );
@@ -1343,9 +1507,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <input
                     type="datetime-local"
                     value={toLocalDateTimeInputValue(scheduledDraft)}
-                    onChange={(e) =>
-                      setScheduledDraft(e.target.value ? new Date(e.target.value).toISOString() : '')
-                    }
+                    onChange={(e) => setScheduledDraft(parseLocalDateTimeInput(e.target.value))}
                     className="flex-1 min-w-0 rounded-lg bg-[#090E18] border border-slate-700 px-2.5 py-2 text-sm sm:text-xs text-white"
                   />
                   <button
@@ -1650,9 +1812,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <input
                     type="datetime-local"
                     value={toLocalDateTimeInputValue(scheduledDraft)}
-                    onChange={(e) =>
-                      setScheduledDraft(e.target.value ? new Date(e.target.value).toISOString() : '')
-                    }
+                    onChange={(e) => setScheduledDraft(parseLocalDateTimeInput(e.target.value))}
                     className="w-full rounded-lg bg-[#090E18] border border-slate-700 px-2.5 py-2 text-sm sm:text-xs text-white"
                   />
                 </div>
