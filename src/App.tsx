@@ -118,7 +118,7 @@ export default function App() {
     });
     const pollId = window.setInterval(() => {
       void pullServerState();
-    }, 2500);
+    }, 1500);
 
     return () => {
       unsubFirestore();
@@ -141,7 +141,20 @@ export default function App() {
           firebaseUser={firebaseUser}
         />
       ) : (
-        <SpectatorArena battle={battle} settings={settings} instagram={instagram} />
+        <SpectatorArena
+          battle={battle}
+          settings={settings}
+          instagram={instagram}
+          onSyncNow={() => {
+            void fetchServerBattleState().then((srv) => {
+              if (!srv) return;
+              if (isNewer(srv.battle.updatedAt, battleTsRef.current)) {
+                battleTsRef.current = srv.battle.updatedAt;
+                setBattle(srv.battle);
+              }
+            });
+          }}
+        />
       )}
     </ErrorBoundary>
   );

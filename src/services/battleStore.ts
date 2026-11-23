@@ -150,11 +150,21 @@ export interface ServerStateSnapshot {
   history: BattleHistoryEntry[];
 }
 
+async function safeReadJson<T>(res: Response): Promise<T | null> {
+  try {
+    const text = await res.text();
+    if (!text) return null;
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchServerBattleState(): Promise<ServerStateSnapshot | null> {
   try {
     const res = await fetch('/api/battle/state');
     if (!res.ok) return null;
-    return (await res.json()) as ServerStateSnapshot;
+    return await safeReadJson<ServerStateSnapshot>(res);
   } catch {
     return null;
   }
@@ -418,8 +428,8 @@ export async function addBattleHistory(entry: Omit<BattleHistoryEntry, 'id'>): P
   let createdId = `hist_${Date.now()}`;
   const res = await adminApiFetch('/api/battle/history', 'POST', payload);
   if (res && res.ok) {
-    const data = (await res.json()) as { id?: string };
-    if (data.id) createdId = data.id;
+    const data = await safeReadJson<{ id?: string }>(res);
+    if (data?.id) createdId = data.id;
   }
   broadcastStateUpdated();
 

@@ -64,6 +64,36 @@ interface AdminPanelProps {
 type AdminTab = 'control' | 'countries' | 'instagram' | 'history' | 'reels' | 'security';
 type MobileControlSection = 'all' | 'red' | 'blue' | 'settings';
 
+function toLocalDateTimeInputValue(iso?: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatAdminCountdown(targetIso?: string): string {
+  if (!targetIso) return '';
+  const targetMs = Date.parse(targetIso);
+  if (!Number.isFinite(targetMs)) return '';
+  const diff = Math.max(0, targetMs - Date.now());
+  const totalSec = Math.floor(diff / 1000);
+  const hrs = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+async function safeReadJson<T>(res: Response): Promise<{ data: T | null; rawText: string }> {
+  const rawText = await res.text();
+  if (!rawText) return { data: null, rawText: '' };
+  try {
+    return { data: JSON.parse(rawText) as T, rawText };
+  } catch {
+    return { data: null, rawText };
+  }
+}
+
 export const AdminPanel: React.FC<AdminPanelProps> = ({
   battle,
   settings,
@@ -140,6 +170,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const battleStartTimeRef = useRef<number>(Date.now());
   const battleRef = useRef<ActiveBattle>(battle);
   battleRef.current = battle;
+  const autoStartedForIsoRef = useRef<string>('');
+  const [adminCountdownLabel, setAdminCountdownLabel] = useState<string>(() =>
+    formatAdminCountdown(battle.scheduledStartAt)
+  );
 
   const notify = (msg: string) => {
     setToast(msg);
@@ -175,10 +209,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // Check server admin setup status
   useEffect(() => {
     fetch('/api/admin/status')
-      .then((r) => r.json())
-      .then((data: { needsInitialSetup?: boolean; configuredViaEnv?: boolean }) => {
-        setNeedsInitialSetup(Boolean(data.needsInitialSetup));
-        setConfiguredViaEnv(Boolean(data.configuredViaEnv));
+      .then(async (r) => {
+        const { data } = await safeReadJson<{ needsInitialSetup?: boolean; configuredViaEnv?: boolean }>(r);
+        if (r.ok && data) {
+          setNeedsInitialSetup(Boolean(data.needsInitialSetup));
+          setConfiguredViaEnv(Boolean(data.configuredViaEnv));
+        }
       })
       .catch(() => {});
   }, []);
@@ -303,6 +339,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleAdminAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
+    if (!passwordInput.trim()) {
+      setAuthError('Lütfen yönetici şifresini girin.');
+      return;
+    }
     if (needsInitialSetup && passwordInput !== confirmPasswordInput) {
       setAuthError('Şifreler birbiriyle eşleşmiyor.');
       return;
@@ -319,7 +359,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           password: passwordInput,
         }),
       });
-      const data = (await res.json()) as { ok?: boolean; sessionToken?: string; error?: string };
+      const { data } = await safeReadJson<{ ok?: boolean; sessionToken?: string; error?: string }>(res);
+      if (res.status === 428) {
+        setNeedsInitialSetup(true);
+        setAuthError(data?.error || 'İlk kurulum için lütfen bir yönetici şifresi belirleyin.');
+        return;
+      }
+      if (!data) {
+        setAuthError(`Sunucu API yanıtı geçersiz (HTTP ${res.status}). Lütfen sayfayı yenileyip tekrar deneyin.`);
+        return;
+      }
       if (!res.ok || !data.sessionToken) {
         setAuthError(data.error || 'Yönetici doğrulaması başarısız.');
         return;
@@ -439,6 +488,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       ? opponentSoldiersDraft
       : instagram.lastValidFollowers * soldiersPerFollowerDraft;
     const finalBlue = manualBlueSoldiersDraft;
+    const hasFutureSchedule =
+      Boolean(scheduledDraft) && Number.isFinite(Date.parse(scheduledDraft)) && Date.parse(scheduledDraft) > Date.now();
+    const nextStatus =
+      battle.status === 'fighting' || battle.status === 'wall_lowering'
+        ? battle.status
+        : hasFutureSchedule
+        ? 'countdown'
+        : battle.status === 'countdown'
+        ? 'idle'
+        : battle.status;
+
     await saveSiteSettings({
       ...settings,
       soldiersPerFollower: soldiersPerFollowerDraft,
@@ -452,11 +512,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       homeColor: homeColorDraft,
       homeModel: homeModelDraft,
       homeSoldiers: finalBlue,
-      homeRemaining: battle.status === 'idle' ? finalBlue : Math.min(finalBlue, homeRemainingDraft),
+      homeRemaining: battle.status === 'idle' || battle.status === 'countdown' ? finalBlue : Math.min(finalBlue, homeRemainingDraft),
       opponentColor: opponentColorDraft,
       opponentModel: opponentModelDraft,
       opponentSoldiers: finalRed,
-      opponentRemaining: battle.status === 'idle' ? finalRed : Math.min(finalRed, opponentRemainingDraft),
+      opponentRemaining: battle.status === 'idle' || battle.status === 'countdown' ? finalRed : Math.min(finalRed, opponentRemainingDraft),
+      status: nextStatus,
       scheduledStartAt: scheduledDraft,
       arenaTheme: arenaThemeDraft,
       battleSpeed: battleSpeedDraft,
@@ -466,11 +527,55 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     notify('Savaş, asker durumu ve 3B ayarları kaydedildi.');
   };
 
+  const handleScheduleBattleStart = async (targetIso: string) => {
+    if (targetIso) {
+      const ms = Date.parse(targetIso);
+      if (!Number.isFinite(ms) || ms <= Date.now()) {
+        notify('Lütfen şimdiki zamandan ileri bir savaş başlangıç zamanı seçin.');
+        return;
+      }
+    }
+
+    const redCount = manualBlueEnabled
+      ? opponentSoldiersDraft
+      : instagram.lastValidFollowers * soldiersPerFollowerDraft;
+    const blueCount = manualBlueSoldiersDraft;
+
+    setScheduledDraft(targetIso);
+    autoStartedForIsoRef.current = '';
+
+    await saveActiveBattle({
+      ...battle,
+      homeSoldiers: blueCount,
+      homeRemaining: battle.status === 'finished' ? blueCount : battle.homeRemaining,
+      opponentSoldiers: redCount,
+      opponentRemaining: battle.status === 'finished' ? redCount : battle.opponentRemaining,
+      status: targetIso ? 'countdown' : 'idle',
+      wallHeight: 14,
+      winnerSide: targetIso ? 'none' : battle.winnerSide,
+      winnerName: targetIso ? '' : battle.winnerName,
+      scheduledStartAt: targetIso,
+    });
+
+    if (targetIso) {
+      const formatted = new Date(targetIso).toLocaleString('tr-TR', {
+        day: '2-digit',
+        month: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      notify(`Savaş başlangıç zamanı ayarlandı (${formatted}). İzleyici ekranında geri sayım başladı.`);
+    } else {
+      notify('Savaş geri sayımı iptal edildi.');
+    }
+  };
+
   const handleStartBattle = async () => {
     const redCount = manualBlueEnabled
       ? opponentSoldiersDraft
       : instagram.lastValidFollowers * soldiersPerFollowerDraft;
     const blueCount = manualBlueSoldiersDraft;
+    setScheduledDraft('');
     await saveActiveBattle({
       ...battle,
       homeSoldiers: blueCount,
@@ -479,6 +584,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       opponentRemaining: redCount,
       status: 'wall_lowering',
       wallHeight: 14,
+      scheduledStartAt: '',
       winnerSide: 'none',
       winnerName: '',
     });
@@ -492,11 +598,37 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }, Math.max(1500, wallDurationDraft * 1000));
   };
 
+  useEffect(() => {
+    if (!battle.scheduledStartAt || (battle.status !== 'idle' && battle.status !== 'countdown')) {
+      setAdminCountdownLabel('');
+      return;
+    }
+    const tick = () => {
+      setAdminCountdownLabel(formatAdminCountdown(battle.scheduledStartAt));
+      if (!sessionToken || !battle.scheduledStartAt) return;
+      const targetMs = Date.parse(battle.scheduledStartAt);
+      if (
+        Number.isFinite(targetMs) &&
+        Date.now() >= targetMs &&
+        autoStartedForIsoRef.current !== battle.scheduledStartAt
+      ) {
+        autoStartedForIsoRef.current = battle.scheduledStartAt;
+        void handleStartBattle();
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, 1000);
+    return () => window.clearInterval(id);
+  }, [battle.scheduledStartAt, battle.status, sessionToken]);
+
   const handleStopOrResetBattle = async (resetToIdle: boolean) => {
     const redCount = manualBlueEnabled
       ? opponentSoldiersDraft
       : instagram.lastValidFollowers * soldiersPerFollowerDraft;
     const blueCount = manualBlueSoldiersDraft;
+    if (resetToIdle) {
+      setScheduledDraft('');
+    }
     await saveActiveBattle({
       ...battle,
       homeSoldiers: blueCount,
@@ -505,6 +637,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       opponentRemaining: resetToIdle ? redCount : battle.opponentRemaining,
       status: 'idle',
       wallHeight: 14,
+      scheduledStartAt: resetToIdle ? '' : battle.scheduledStartAt,
       winnerSide: 'none',
       winnerName: '',
     });
@@ -547,9 +680,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           lastValidFollowers: instagram.lastValidFollowers,
         }),
       });
-      const data = (await res.json()) as InstagramSync & { error?: string };
-      if (!res.ok) {
-        notify(data.error || 'Instagram senkronizasyon hatası.');
+      const { data } = await safeReadJson<InstagramSync & { error?: string }>(res);
+      if (!res.ok || !data) {
+        notify(data?.error || 'Instagram senkronizasyon hatası.');
         return;
       }
       await saveInstagramSync(data);
@@ -598,9 +731,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           handle: settings.instagramHandle,
         }),
       });
-      const data = (await res.json()) as InstagramSync & { error?: string };
-      if (!res.ok) {
-        notify(data.error || 'Takipçi sayısı güncellenemedi.');
+      const { data } = await safeReadJson<InstagramSync & { error?: string }>(res);
+      if (!res.ok || !data) {
+        notify(data?.error || 'Takipçi sayısı güncellenemedi.');
         return;
       }
       await saveInstagramSync(data);
@@ -694,9 +827,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         headers,
         body: JSON.stringify({ currentPassword: currentPwd, newPassword: newPwd }),
       });
-      const data = (await res.json()) as { message?: string; error?: string };
-      if (!res.ok) {
-        notify(data.error || 'Şifre güncellenemedi.');
+      const { data } = await safeReadJson<{ message?: string; error?: string }>(res);
+      if (!res.ok || !data) {
+        notify(data?.error || 'Şifre güncellenemedi.');
         return;
       }
       setCurrentPwd('');
@@ -990,6 +1123,74 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
             </div>
 
+            {/* Quick Battle Start Time Scheduler Card */}
+            <div className="rounded-xl bg-[#0D1422] border border-amber-500/30 p-3 sm:p-4 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-amber-400 shrink-0" />
+                  <h2 className="font-display text-xs sm:text-sm font-bold text-white">
+                    Savaş Başlangıç Zamanı & Geri Sayım
+                  </h2>
+                </div>
+                {adminCountdownLabel ? (
+                  <span className="font-mono text-xs font-semibold text-amber-300 tabular-nums">
+                    Kalan Süre: {adminCountdownLabel}
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-slate-400">Zamanlama seçilmedi</span>
+                )}
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                <div className="flex items-center gap-2 flex-1">
+                  <input
+                    type="datetime-local"
+                    value={toLocalDateTimeInputValue(scheduledDraft)}
+                    onChange={(e) =>
+                      setScheduledDraft(e.target.value ? new Date(e.target.value).toISOString() : '')
+                    }
+                    className="flex-1 min-w-0 rounded-lg bg-[#090E18] border border-slate-700 px-2.5 py-2 text-sm sm:text-xs text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleScheduleBattleStart(scheduledDraft)}
+                    className="px-3 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-xs font-semibold text-white whitespace-nowrap shrink-0 transition-colors"
+                  >
+                    Zamanla
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[
+                    { label: '+1 Dk', mins: 1 },
+                    { label: '+5 Dk', mins: 5 },
+                    { label: '+15 Dk', mins: 15 },
+                    { label: '+1 Saat', mins: 60 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() =>
+                        void handleScheduleBattleStart(new Date(Date.now() + preset.mins * 60_000).toISOString())
+                      }
+                      className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] font-medium text-slate-200 transition-colors whitespace-nowrap"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                  {(scheduledDraft || battle.scheduledStartAt) && (
+                    <button
+                      type="button"
+                      onClick={() => void handleScheduleBattleStart('')}
+                      className="px-2.5 py-1.5 rounded-lg bg-rose-950/50 hover:bg-rose-900/60 border border-rose-500/30 text-[11px] font-medium text-rose-200 transition-colors whitespace-nowrap"
+                    >
+                      İptal
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Mobile Section Switcher so nothing gets pushed down far on small screens */}
             <div className="lg:hidden grid grid-cols-4 gap-1 rounded-xl bg-[#0D1422] border border-slate-800 p-1">
               {(
@@ -1251,7 +1452,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <label className="block text-[11px] sm:text-xs text-slate-400 mb-1">Başlangıç Saati</label>
                   <input
                     type="datetime-local"
-                    value={scheduledDraft ? scheduledDraft.slice(0, 16) : ''}
+                    value={toLocalDateTimeInputValue(scheduledDraft)}
                     onChange={(e) =>
                       setScheduledDraft(e.target.value ? new Date(e.target.value).toISOString() : '')
                     }

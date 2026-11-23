@@ -172,6 +172,47 @@ let activeBattleCache: ActiveBattle = {
   updatedAt: new Date(0).toISOString(),
 };
 
+let wallLoweringFinishAt: number | null = null;
+
+function advanceScheduledBattleIfReady(): void {
+  const now = Date.now();
+  if (
+    (activeBattleCache.status === 'idle' || activeBattleCache.status === 'countdown') &&
+    activeBattleCache.scheduledStartAt
+  ) {
+    const targetMs = Date.parse(activeBattleCache.scheduledStartAt);
+    if (Number.isFinite(targetMs) && now >= targetMs) {
+      const durationMs = Math.max(1500, (siteSettingsCache.wallLoweringDuration || 4) * 1000);
+      wallLoweringFinishAt = now + durationMs;
+      activeBattleCache = {
+        ...activeBattleCache,
+        homeRemaining: activeBattleCache.homeSoldiers,
+        opponentRemaining: activeBattleCache.opponentSoldiers,
+        status: 'wall_lowering',
+        wallHeight: 14,
+        scheduledStartAt: '',
+        winnerSide: 'none',
+        winnerName: '',
+        updatedAt: new Date(now).toISOString(),
+      };
+    }
+  }
+
+  if (
+    activeBattleCache.status === 'wall_lowering' &&
+    wallLoweringFinishAt !== null &&
+    now >= wallLoweringFinishAt
+  ) {
+    wallLoweringFinishAt = null;
+    activeBattleCache = {
+      ...activeBattleCache,
+      status: 'fighting',
+      wallHeight: 0,
+      updatedAt: new Date(now).toISOString(),
+    };
+  }
+}
+
 let siteSettingsCache: SiteSettings = {
   soldiersPerFollower: 1,
   instagramHandle: INSTAGRAM_HANDLE,
@@ -469,6 +510,7 @@ export function createApiApp(): express.Express {
 
   // Public Battle, Settings, Countries & History state endpoint
   app.get('/api/battle/state', (_req, res) => {
+    advanceScheduledBattleIfReady();
     res.json({
       battle: activeBattleCache,
       settings: siteSettingsCache,
@@ -484,6 +526,9 @@ export function createApiApp(): express.Express {
     if (!body || typeof body !== 'object') {
       res.status(400).json({ error: 'Geçersiz savaş verisi.' });
       return;
+    }
+    if (body.status && body.status !== 'wall_lowering') {
+      wallLoweringFinishAt = null;
     }
     activeBattleCache = {
       ...activeBattleCache,

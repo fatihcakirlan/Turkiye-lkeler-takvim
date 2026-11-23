@@ -8,6 +8,7 @@ interface SpectatorArenaProps {
   battle: ActiveBattle;
   settings: SiteSettings;
   instagram: InstagramSync;
+  onSyncNow?: () => void;
 }
 
 const STATUS_LABELS: Record<ActiveBattle['status'], string> = {
@@ -22,26 +23,53 @@ function formatSoldierCount(n: number): string {
   return String(Math.max(0, Math.round(n)));
 }
 
-function formatCountdown(targetIso?: string): string {
-  if (!targetIso) return '';
-  const targetMs = new Date(targetIso).getTime();
-  if (!Number.isFinite(targetMs)) return '';
-  const diff = targetMs - Date.now();
-  if (diff <= 0) return '00:00:00';
+interface CountdownDetails {
+  remainingMs: number;
+  text: string;
+  targetClock: string;
+}
+
+function getCountdownDetails(targetIso?: string): CountdownDetails | null {
+  if (!targetIso) return null;
+  const targetMs = Date.parse(targetIso);
+  if (!Number.isFinite(targetMs)) return null;
+  const diff = Math.max(0, targetMs - Date.now());
   const totalSec = Math.floor(diff / 1000);
-  const hrs = Math.floor(totalSec / 3600);
+  const days = Math.floor(totalSec / 86400);
+  const hrs = Math.floor((totalSec % 86400) / 3600);
   const mins = Math.floor((totalSec % 3600) / 60);
   const secs = totalSec % 60;
-  return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+  let text = '';
+  if (days > 0) {
+    text = `${days} gün ${String(hrs).padStart(2, '0')} sa ${String(mins).padStart(2, '0')} dk ${String(secs).padStart(2, '0')} sn`;
+  } else if (hrs > 0) {
+    text = `${String(hrs).padStart(2, '0')} sa ${String(mins).padStart(2, '0')} dk ${String(secs).padStart(2, '0')} sn`;
+  } else if (mins > 0) {
+    text = `${String(mins).padStart(2, '0')} dk ${String(secs).padStart(2, '0')} sn`;
+  } else {
+    text = `${secs} sn`;
+  }
+
+  const targetClock = new Date(targetMs).toLocaleTimeString('tr-TR', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  return { remainingMs: diff, text, targetClock };
 }
 
 export const SpectatorArena: React.FC<SpectatorArenaProps> = ({
   battle,
   settings,
   instagram,
+  onSyncNow,
 }) => {
   const [cameraPreset, setCameraPreset] = useState(settings.defaultCamera || 'overview');
-  const [countdownText, setCountdownText] = useState(() => formatCountdown(battle.scheduledStartAt));
+  const isWaitingForStart = battle.status === 'idle' || battle.status === 'countdown';
+  const [countdown, setCountdown] = useState<CountdownDetails | null>(() =>
+    isWaitingForStart ? getCountdownDetails(battle.scheduledStartAt) : null
+  );
   const [localDisplay, setLocalDisplay] = useState<{
     homeRem: number;
     oppRem: number;
@@ -65,12 +93,25 @@ export const SpectatorArena: React.FC<SpectatorArenaProps> = ({
   }, [settings.defaultCamera]);
 
   useEffect(() => {
-    setCountdownText(formatCountdown(battle.scheduledStartAt));
-    const timer = window.setInterval(() => {
-      setCountdownText(formatCountdown(battle.scheduledStartAt));
-    }, 1000);
+    if (!isWaitingForStart || !battle.scheduledStartAt) {
+      setCountdown(null);
+      return;
+    }
+
+    let syncedOnZero = false;
+    const tick = () => {
+      const details = getCountdownDetails(battle.scheduledStartAt);
+      setCountdown(details);
+      if (details && details.remainingMs <= 0 && !syncedOnZero) {
+        syncedOnZero = true;
+        onSyncNow?.();
+      }
+    };
+
+    tick();
+    const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
-  }, [battle.scheduledStartAt]);
+  }, [battle.scheduledStartAt, isWaitingForStart, onSyncNow]);
 
   const effectiveBattle: ActiveBattle = useMemo(() => {
     if (battle.status === 'fighting') {
@@ -97,6 +138,9 @@ export const SpectatorArena: React.FC<SpectatorArenaProps> = ({
   const igHandle = (instagram.handle || settings.instagramHandle || 'kirmizivemavitakim').replace(/^@/, '');
   const instagramFollowUrl = `https://www.instagram.com/${encodeURIComponent(igHandle)}/`;
   const activeStatusLabel = STATUS_LABELS[effectiveBattle.status];
+  const showCountdownBar =
+    (effectiveBattle.status === 'idle' || effectiveBattle.status === 'countdown') &&
+    countdown !== null;
 
   return (
     <div className="relative h-[100dvh] w-full overflow-hidden bg-[#070B12] text-slate-100 select-none">
@@ -112,7 +156,7 @@ export const SpectatorArena: React.FC<SpectatorArenaProps> = ({
         />
       </div>
 
-      {/* Clean Top Matchup HUD: Türkiye 620 vs Almanya 3000 + Slogan + Asker Ol */}
+      {/* Clean Top Matchup HUD: Türkiye 620 vs Almanya 3000 + Slogan + Asker Ol + Geri Sayım */}
       <header className="pointer-events-none absolute inset-x-0 top-0 z-20 p-2 sm:p-3">
         <div className="mx-auto max-w-3xl rounded-xl bg-[#0B111C]/92 border border-slate-800 shadow-2xl px-2.5 py-2 sm:px-4 sm:py-2.5">
           {/* Primary Country Stats Row */}
@@ -136,21 +180,14 @@ export const SpectatorArena: React.FC<SpectatorArenaProps> = ({
               </span>
             </div>
 
-            {/* CENTER: VS / Optional Live Countdown */}
+            {/* CENTER: VS / Battle Status */}
             <div className="flex flex-col items-center justify-center px-1 sm:px-1.5 text-center">
               <span className="font-display text-[11px] sm:text-sm font-bold tracking-wider text-slate-300">
                 VS
               </span>
-              {(activeStatusLabel || countdownText) && (
-                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-300 whitespace-nowrap tabular-nums">
-                  {countdownText ? (
-                    <>
-                      <Clock className="w-3 h-3" />
-                      {countdownText}
-                    </>
-                  ) : (
-                    activeStatusLabel
-                  )}
+              {activeStatusLabel && (
+                <span className="text-[10px] font-medium text-amber-300 whitespace-nowrap">
+                  {activeStatusLabel}
                 </span>
               )}
             </div>
@@ -194,6 +231,24 @@ export const SpectatorArena: React.FC<SpectatorArenaProps> = ({
               <span>Asker Ol</span>
             </a>
           </div>
+
+          {/* Live Scheduled Battle Countdown Strip */}
+          {showCountdownBar && countdown && (
+            <div className="mt-1.5 pt-1.5 sm:mt-2 sm:pt-2 border-t border-amber-500/25 flex items-center justify-between gap-2 rounded-lg bg-amber-950/25 px-2.5 py-1.5">
+              <span className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs font-semibold text-amber-200 min-w-0">
+                <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span className="truncate">Savaşa Şu Kadar Süre Kaldı:</span>
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="font-mono text-xs sm:text-sm font-bold text-amber-300 tabular-nums whitespace-nowrap">
+                  {countdown.remainingMs <= 0 ? 'Başlıyor...' : countdown.text}
+                </span>
+                <span className="hidden sm:inline text-[11px] text-amber-200/70 tabular-nums">
+                  ({countdown.targetClock})
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       </header>
 
