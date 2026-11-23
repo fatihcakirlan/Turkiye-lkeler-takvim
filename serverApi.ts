@@ -6,6 +6,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getApp, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
+import type {
+  ActiveBattle,
+  BattleHistoryEntry,
+  Country,
+  InstagramSync,
+  SiteSettings,
+} from './src/types/battle';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -126,15 +133,7 @@ async function verifyFirebaseAdminCaller(
   }
 }
 
-export interface InstagramCacheState {
-  handle: string;
-  followers: number;
-  lastValidFollowers: number;
-  syncStatus: 'ok' | 'preserved_fallback' | 'pending';
-  source: string;
-  lastError: string;
-  lastUpdatedAt: string;
-}
+export interface InstagramCacheState extends InstagramSync {}
 
 let instagramCache: InstagramCacheState = {
   handle: INSTAGRAM_HANDLE,
@@ -143,8 +142,50 @@ let instagramCache: InstagramCacheState = {
   syncStatus: 'pending',
   source: 'initial',
   lastError: '',
-  lastUpdatedAt: new Date().toISOString(),
+  lastUpdatedAt: new Date(0).toISOString(),
 };
+
+let activeBattleCache: ActiveBattle = {
+  homeCountryCode: 'DE',
+  homeCountryName: 'Almanya',
+  homeFlag: '🇩🇪',
+  homeColor: '#2563EB',
+  homeModel: 'heavy',
+  homeSoldiers: 3000,
+  homeRemaining: 3000,
+  opponentCountryCode: 'TR',
+  opponentCountryName: 'Türkiye',
+  opponentFlag: '🇹🇷',
+  opponentColor: '#DC2626',
+  opponentModel: 'commando',
+  opponentSoldiers: 620,
+  opponentRemaining: 620,
+  status: 'idle',
+  wallHeight: 14,
+  scheduledStartAt: '',
+  winnerSide: 'none',
+  winnerName: '',
+  arenaTheme: 'twilight',
+  battleSpeed: 1,
+  soldierScale: 1,
+  manualOverrideBlue: false,
+  updatedAt: new Date(0).toISOString(),
+};
+
+let siteSettingsCache: SiteSettings = {
+  soldiersPerFollower: 1,
+  instagramHandle: INSTAGRAM_HANDLE,
+  autoSyncMinutes: 5,
+  arenaTheme: 'twilight',
+  wallLoweringDuration: 4,
+  battleSpeed: 1,
+  defaultCamera: 'overview',
+  updatedAt: new Date(0).toISOString(),
+};
+
+const countryOverridesCache = new Map<string, Country>();
+const removedCountryCodes = new Set<string>();
+const battleHistoryCache: BattleHistoryEntry[] = [];
 
 function parseCompactFollowerCount(raw: string): number | null {
   const cleaned = raw.trim().replace(/\s+/g, '').replace(/,/g, '.');
@@ -291,7 +332,7 @@ export function createApiApp(): express.Express {
       res.status(401).json({ error: 'Oturum geçersiz veya süresi dolmuş.' });
       return;
     }
-    if (typeof idToken === 'string' && idToken.length > 0) {
+    if (typeof idToken === 'string' && idToken.length > 0 && session.uid !== 'admin-password') {
       const verified = await verifyFirebaseAdminCaller(idToken);
       if (!verified || verified.uid !== session.uid) {
         res.status(403).json({ error: 'Firebase yönetici doğrulaması başarısız.' });
@@ -310,6 +351,7 @@ export function createApiApp(): express.Express {
     });
   });
 
+  // Password-only first-run claim (optional Firebase ID token)
   app.post('/api/admin/claim', async (req, res) => {
     if (activeAdminPassword !== null) {
       res.status(409).json({ error: 'Yönetici şifresi zaten tanımlanmış.' });
@@ -320,29 +362,36 @@ export function createApiApp(): express.Express {
       password?: string;
       allowedEmails?: string[];
     };
-    const verified = await verifyFirebaseAdminCaller(
-      idToken,
-      Array.isArray(allowedEmails) ? allowedEmails : [ALLOWED_BOOTSTRAP_EMAIL]
-    );
-    if (!verified) {
-      res.status(403).json({ error: 'Önce yetkili Google hesabınızla Firebase doğrulaması yapın.' });
-      return;
-    }
     if (typeof password !== 'string' || password.length < 6 || password.length > 128) {
       res.status(400).json({ error: 'Şifre en az 6, en fazla 128 karakter olmalıdır.' });
       return;
     }
+
+    let uid = 'admin-password';
+    let email = ALLOWED_BOOTSTRAP_EMAIL;
+    if (typeof idToken === 'string' && idToken.length > 0) {
+      const verified = await verifyFirebaseAdminCaller(
+        idToken,
+        Array.isArray(allowedEmails) ? allowedEmails : [ALLOWED_BOOTSTRAP_EMAIL]
+      );
+      if (verified) {
+        uid = verified.uid;
+        email = verified.email;
+      }
+    }
+
     const hashed = hashPasswordScrypt(password);
     activeAdminPassword = { ...hashed, source: 'claimed' };
-    const sessionToken = signSessionToken(verified.uid, verified.email);
+    const sessionToken = signSessionToken(uid, email);
     res.json({
       ok: true,
       sessionToken,
-      email: verified.email,
-      uid: verified.uid,
+      email,
+      uid,
     });
   });
 
+  // Password-only Admin Login (optional Firebase ID token)
   app.post('/api/admin/login', async (req, res) => {
     if (activeAdminPassword === null) {
       res.status(428).json({ error: 'İlk kurulum tamamlanmamış. Lütfen önce yönetici şifresi belirleyin.' });
@@ -353,24 +402,30 @@ export function createApiApp(): express.Express {
       password?: string;
       allowedEmails?: string[];
     };
-    const verified = await verifyFirebaseAdminCaller(
-      idToken,
-      Array.isArray(allowedEmails) ? allowedEmails : [ALLOWED_BOOTSTRAP_EMAIL]
-    );
-    if (!verified) {
-      res.status(403).json({ error: 'Firebase kimlik doğrulaması yetkili yönetici hesabıyla eşleşmedi.' });
-      return;
-    }
     if (typeof password !== 'string' || password.length === 0 || !verifyPasswordScrypt(password, activeAdminPassword)) {
       res.status(401).json({ error: 'Yönetici şifresi hatalı. Erişim reddedildi.' });
       return;
     }
-    const sessionToken = signSessionToken(verified.uid, verified.email);
+
+    let uid = 'admin-password';
+    let email = ALLOWED_BOOTSTRAP_EMAIL;
+    if (typeof idToken === 'string' && idToken.length > 0) {
+      const verified = await verifyFirebaseAdminCaller(
+        idToken,
+        Array.isArray(allowedEmails) ? allowedEmails : [ALLOWED_BOOTSTRAP_EMAIL]
+      );
+      if (verified) {
+        uid = verified.uid;
+        email = verified.email;
+      }
+    }
+
+    const sessionToken = signSessionToken(uid, email);
     res.json({
       ok: true,
       sessionToken,
-      email: verified.email,
-      uid: verified.uid,
+      email,
+      uid,
     });
   });
 
@@ -409,6 +464,93 @@ export function createApiApp(): express.Express {
         revokedTokenIds.add(session.jti);
       }
     }
+    res.json({ ok: true });
+  });
+
+  // Public Battle, Settings, Countries & History state endpoint
+  app.get('/api/battle/state', (_req, res) => {
+    res.json({
+      battle: activeBattleCache,
+      settings: siteSettingsCache,
+      instagram: instagramCache,
+      countryOverrides: Array.from(countryOverridesCache.values()),
+      removedCountryCodes: Array.from(removedCountryCodes),
+      history: battleHistoryCache,
+    });
+  });
+
+  app.put('/api/battle/active', requireAdmin, (req, res) => {
+    const body = req.body as Partial<ActiveBattle>;
+    if (!body || typeof body !== 'object') {
+      res.status(400).json({ error: 'Geçersiz savaş verisi.' });
+      return;
+    }
+    activeBattleCache = {
+      ...activeBattleCache,
+      ...body,
+      updatedAt: new Date().toISOString(),
+    };
+    res.json(activeBattleCache);
+  });
+
+  app.put('/api/battle/settings', requireAdmin, (req, res) => {
+    const body = req.body as Partial<SiteSettings>;
+    if (!body || typeof body !== 'object') {
+      res.status(400).json({ error: 'Geçersiz ayar verisi.' });
+      return;
+    }
+    siteSettingsCache = {
+      ...siteSettingsCache,
+      ...body,
+      updatedAt: new Date().toISOString(),
+    };
+    res.json(siteSettingsCache);
+  });
+
+  app.post('/api/battle/history', requireAdmin, (req, res) => {
+    const body = req.body as Omit<BattleHistoryEntry, 'id'>;
+    if (!body || typeof body !== 'object') {
+      res.status(400).json({ error: 'Geçersiz geçmiş verisi.' });
+      return;
+    }
+    const entry: BattleHistoryEntry = {
+      ...body,
+      id: `hist_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      createdAt: body.createdAt || new Date().toISOString(),
+    };
+    battleHistoryCache.unshift(entry);
+    if (battleHistoryCache.length > 100) battleHistoryCache.length = 100;
+    res.json(entry);
+  });
+
+  app.put('/api/battle/history/:id/reels', requireAdmin, (req, res) => {
+    const { id } = req.params;
+    const { reelsUrl, reelsPath } = req.body as { reelsUrl?: string; reelsPath?: string };
+    const found = battleHistoryCache.find((h) => h.id === id);
+    if (found) {
+      found.reelsUrl = reelsUrl || '';
+      found.reelsPath = reelsPath || '';
+    }
+    res.json({ ok: true });
+  });
+
+  app.put('/api/countries/:code', requireAdmin, (req, res) => {
+    const code = String(req.params.code || '').trim().toUpperCase().slice(0, 12);
+    const body = req.body as Country;
+    if (!code || !body || typeof body.name !== 'string') {
+      res.status(400).json({ error: 'Geçersiz ülke verisi.' });
+      return;
+    }
+    const clean: Country = { ...body, code, updatedAt: new Date().toISOString() };
+    countryOverridesCache.set(code, clean);
+    removedCountryCodes.delete(code);
+    res.json(clean);
+  });
+
+  app.delete('/api/countries/:code', requireAdmin, (req, res) => {
+    const code = String(req.params.code || '').trim().toUpperCase().slice(0, 12);
+    countryOverridesCache.delete(code);
+    removedCountryCodes.add(code);
     res.json({ ok: true });
   });
 

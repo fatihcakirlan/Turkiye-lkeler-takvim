@@ -185,13 +185,13 @@ export const ReelsStudio: React.FC<ReelsStudioProps> = ({ battle, history, onNot
   };
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_1fr] gap-6">
+    <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_1fr] gap-4 sm:gap-6">
       {/* Live 3D Stage Preview */}
-      <div className="rounded-xl bg-[#0D1422] border border-slate-800 p-4 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="rounded-xl bg-[#0D1422] border border-slate-800 p-3.5 sm:p-4 space-y-3 sm:space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
           <div>
-            <h3 className="font-display text-lg font-bold text-white">3B Reels Kayıt Sahnesi</h3>
-            <p className="text-xs text-slate-400">
+            <h3 className="font-display text-base sm:text-lg font-bold text-white">3B Reels Kayıt Sahnesi</h3>
+            <p className="text-[11px] sm:text-xs text-slate-400">
               9:16 dikey Instagram Reels videosu yakalamak için canlı 3B sahneyi kullanır.
             </p>
           </div>
@@ -200,25 +200,25 @@ export const ReelsStudio: React.FC<ReelsStudioProps> = ({ battle, history, onNot
               <button
                 type="button"
                 onClick={startRecording}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-colors whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold transition-colors whitespace-nowrap"
               >
                 <Video className="w-4 h-4" />
-                <span>Reels Kaydını Başlat</span>
+                <span>Kaydı Başlat</span>
               </button>
             ) : (
               <button
                 type="button"
                 onClick={stopRecording}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition-colors whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition-colors whitespace-nowrap"
               >
                 <Square className="w-4 h-4" />
-                <span>Kaydı Durdur ({elapsedSec} sn)</span>
+                <span>Durdur ({elapsedSec} sn)</span>
               </button>
             )}
           </div>
         </div>
 
-        <div className="h-[380px] rounded-xl overflow-hidden border border-slate-800">
+        <div className="h-[240px] sm:h-[380px] rounded-xl overflow-hidden border border-slate-800">
           <Battlefield3D
             battle={battle}
             cameraPreset={cameraPreset}
@@ -233,15 +233,15 @@ export const ReelsStudio: React.FC<ReelsStudioProps> = ({ battle, history, onNot
       </div>
 
       {/* Export & Firebase Storage Upload Panel */}
-      <div className="rounded-xl bg-[#0D1422] border border-slate-800 p-4 space-y-4">
+      <div className="rounded-xl bg-[#0D1422] border border-slate-800 p-3.5 sm:p-4 space-y-3 sm:space-y-4">
         <div className="flex items-center gap-2">
-          <Film className="w-5 h-5 text-sky-400" />
-          <h3 className="font-display text-lg font-bold text-white">Dikey Reels Çıktısı & Depolama</h3>
+          <Film className="w-4 h-4 sm:w-5 sm:h-5 text-sky-400" />
+          <h3 className="font-display text-base sm:text-lg font-bold text-white">Dikey Reels Çıktısı</h3>
         </div>
 
         {recordedUrl ? (
-          <div className="space-y-4">
-            <div className="mx-auto w-56 aspect-[9/16] rounded-xl overflow-hidden border border-slate-700 bg-black">
+          <div className="space-y-3 sm:space-y-4">
+            <div className="mx-auto w-40 sm:w-56 aspect-[9/16] rounded-xl overflow-hidden border border-slate-700 bg-black">
               <video src={recordedUrl} controls className="w-full h-full object-cover" />
             </div>
 
@@ -252,7 +252,7 @@ export const ReelsStudio: React.FC<ReelsStudioProps> = ({ battle, history, onNot
               <select
                 value={selectedHistoryId}
                 onChange={(e) => setSelectedHistoryId(e.target.value)}
-                className="w-full rounded-lg bg-[#090E18] border border-slate-700 px-3 py-2 text-xs text-slate-200"
+                className="w-full rounded-lg bg-[#090E18] border border-slate-700 px-3 py-2 text-sm sm:text-xs text-slate-200"
               >
                 <option value="">Geçmiş kaydı seçilmedi</option>
                 {history.map((h) => (
@@ -267,7 +267,7 @@ export const ReelsStudio: React.FC<ReelsStudioProps> = ({ battle, history, onNot
               <a
                 href={recordedUrl}
                 download={`reels_${battle.opponentCountryCode}_vs_${battle.homeCountryCode}.mp4`}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium transition-colors"
+                className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-medium transition-colors"
               >
                 <Download className="w-4 h-4" />
                 <span>Videoyu İndir</span>
@@ -277,10 +277,10 @@ export const ReelsStudio: React.FC<ReelsStudioProps> = ({ battle, history, onNot
                 type="button"
                 disabled={uploading}
                 onClick={handleUploadToFirebase}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-semibold transition-colors"
+                className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-semibold transition-colors"
               >
                 <Upload className="w-4 h-4" />
-                <span>{uploading ? 'Yükleniyor...' : 'Firebase Storage’a Yükle'}</span>
+                <span>{uploading ? 'Yükleniyor...' : 'Storage’a Yükle'}</span>
               </button>
             </div>
 
@@ -294,11 +294,11 @@ export const ReelsStudio: React.FC<ReelsStudioProps> = ({ battle, history, onNot
             )}
           </div>
         ) : (
-          <div className="h-[320px] flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 text-center p-6 space-y-2">
-            <Film className="w-8 h-8 text-slate-600" />
-            <p className="text-sm font-medium text-slate-300">Henüz Reels Kaydı Oluşturulmadı</p>
+          <div className="h-[180px] sm:h-[320px] flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-700 text-center p-4 sm:p-6 space-y-2">
+            <Film className="w-7 h-7 sm:w-8 sm:h-8 text-slate-600" />
+            <p className="text-sm font-medium text-slate-300">Henüz Reels Kaydı Yok</p>
             <p className="text-xs text-slate-500 max-w-xs">
-              Sol taraftaki 3B sahneden "Reels Kaydını Başlat" butonuna basarak 9:16 dikey video oluşturabilir ve Firebase Storage’a yükleyebilirsiniz.
+              3B sahneden "Kaydı Başlat" butonuna basarak 9:16 dikey video oluşturabilir ve cihazınıza indirebilirsiniz. Storage yüklemesi için Güvenlik sekmesinden Google hesabınızı bağlayın.
             </p>
           </div>
         )}

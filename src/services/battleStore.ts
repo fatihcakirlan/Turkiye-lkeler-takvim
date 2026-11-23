@@ -19,7 +19,7 @@ import {
   InstagramSync,
   SiteSettings,
 } from '../types/battle';
-import { db, handleFirestoreError, OperationType, storage } from './firebase';
+import { auth, db, handleFirestoreError, OperationType, storage } from './firebase';
 
 export const DEFAULT_SETTINGS: SiteSettings = {
   soldiersPerFollower: 1,
@@ -29,7 +29,7 @@ export const DEFAULT_SETTINGS: SiteSettings = {
   wallLoweringDuration: 4,
   battleSpeed: 1,
   defaultCamera: 'overview',
-  updatedAt: new Date().toISOString(),
+  updatedAt: new Date(0).toISOString(),
 };
 
 export const DEFAULT_INSTAGRAM: InstagramSync = {
@@ -39,7 +39,7 @@ export const DEFAULT_INSTAGRAM: InstagramSync = {
   syncStatus: 'pending',
   source: 'initial',
   lastError: '',
-  lastUpdatedAt: new Date().toISOString(),
+  lastUpdatedAt: new Date(0).toISOString(),
 };
 
 export const DEFAULT_BATTLE: ActiveBattle = {
@@ -66,8 +66,59 @@ export const DEFAULT_BATTLE: ActiveBattle = {
   battleSpeed: 1,
   soldierScale: 1,
   manualOverrideBlue: false,
-  updatedAt: new Date().toISOString(),
+  updatedAt: new Date(0).toISOString(),
 };
+
+let activeAdminSessionToken: string | null = null;
+const SYNC_CHANNEL_NAME = 'battle-arena-state-sync';
+const localListeners = new Set<() => void>();
+
+export function setAdminSessionToken(token: string | null): void {
+  activeAdminSessionToken = token;
+}
+
+export function subscribeLocalSyncSignal(cb: () => void): () => void {
+  localListeners.add(cb);
+  let channel: BroadcastChannel | null = null;
+  if (typeof BroadcastChannel !== 'undefined') {
+    channel = new BroadcastChannel(SYNC_CHANNEL_NAME);
+    channel.onmessage = () => cb();
+  }
+  return () => {
+    localListeners.delete(cb);
+    channel?.close();
+  };
+}
+
+function broadcastStateUpdated(): void {
+  localListeners.forEach((cb) => cb());
+  if (typeof BroadcastChannel !== 'undefined') {
+    const ch = new BroadcastChannel(SYNC_CHANNEL_NAME);
+    ch.postMessage({ ts: Date.now() });
+    ch.close();
+  }
+}
+
+async function adminApiFetch(url: string, method: string, body?: unknown): Promise<Response | null> {
+  if (!activeAdminSessionToken) return null;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${activeAdminSessionToken}`,
+  };
+  if (auth.currentUser) {
+    try {
+      const idToken = await auth.currentUser.getIdToken();
+      headers['X-Firebase-Id-Token'] = idToken;
+    } catch {
+      // Optional Firebase token
+    }
+  }
+  return fetch(url, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+}
 
 function sanitizeId(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128) || 'id';
@@ -90,6 +141,25 @@ function safeHex(val: string | undefined, fallback: string): string {
   return fallback;
 }
 
+export interface ServerStateSnapshot {
+  battle: ActiveBattle;
+  settings: SiteSettings;
+  instagram: InstagramSync;
+  countryOverrides: Country[];
+  removedCountryCodes: string[];
+  history: BattleHistoryEntry[];
+}
+
+export async function fetchServerBattleState(): Promise<ServerStateSnapshot | null> {
+  try {
+    const res = await fetch('/api/battle/state');
+    if (!res.ok) return null;
+    return (await res.json()) as ServerStateSnapshot;
+  } catch {
+    return null;
+  }
+}
+
 export function subscribePublicBattleState(callbacks: {
   onBattle: (battle: ActiveBattle) => void;
   onSettings: (settings: SiteSettings) => void;
@@ -102,8 +172,6 @@ export function subscribePublicBattleState(callbacks: {
     (snap) => {
       if (snap.exists()) {
         callbacks.onBattle({ ...DEFAULT_BATTLE, ...(snap.data() as Partial<ActiveBattle>) });
-      } else {
-        callbacks.onBattle(DEFAULT_BATTLE);
       }
     },
     (err) => {
@@ -116,8 +184,6 @@ export function subscribePublicBattleState(callbacks: {
     (snap) => {
       if (snap.exists()) {
         callbacks.onSettings({ ...DEFAULT_SETTINGS, ...(snap.data() as Partial<SiteSettings>) });
-      } else {
-        callbacks.onSettings(DEFAULT_SETTINGS);
       }
     },
     (err) => {
@@ -130,8 +196,6 @@ export function subscribePublicBattleState(callbacks: {
     (snap) => {
       if (snap.exists()) {
         callbacks.onInstagram({ ...DEFAULT_INSTAGRAM, ...(snap.data() as Partial<InstagramSync>) });
-      } else {
-        callbacks.onInstagram(DEFAULT_INSTAGRAM);
       }
     },
     (err) => {
@@ -167,7 +231,9 @@ export function subscribePublicBattleState(callbacks: {
       snap.forEach((d) => {
         list.push({ id: d.id, ...(d.data() as BattleHistoryEntry) });
       });
-      callbacks.onHistory(list);
+      if (list.length > 0) {
+        callbacks.onHistory(list);
+      }
     },
     (err) => {
       handleFirestoreError(err, OperationType.LIST, 'battle_history');
@@ -184,6 +250,10 @@ export function subscribePublicBattleState(callbacks: {
 }
 
 export function subscribeAdmins(onAdmins: (admins: AdminUser[]) => void): () => void {
+  if (!auth.currentUser) {
+    onAdmins([]);
+    return () => {};
+  }
   return onSnapshot(
     collection(db, 'adminler'),
     (snap) => {
@@ -202,15 +272,15 @@ export function subscribeAdmins(onAdmins: (admins: AdminUser[]) => void): () => 
 export async function saveActiveBattle(battle: ActiveBattle): Promise<void> {
   const payload: ActiveBattle = {
     homeCountryCode: sanitizeId(battle.homeCountryCode),
-    homeCountryName: clampStr(battle.homeCountryName, 80, 'Türkiye'),
-    homeFlag: clampStr(battle.homeFlag, 32, '🇹🇷'),
+    homeCountryName: clampStr(battle.homeCountryName, 80, 'Almanya'),
+    homeFlag: clampStr(battle.homeFlag, 32, '🇩🇪'),
     homeColor: safeHex(battle.homeColor, '#2563EB'),
     homeModel: battle.homeModel,
     homeSoldiers: Math.round(clampNum(battle.homeSoldiers, 0, 100000000)),
     homeRemaining: Math.round(clampNum(battle.homeRemaining, 0, 100000000)),
     opponentCountryCode: sanitizeId(battle.opponentCountryCode),
-    opponentCountryName: clampStr(battle.opponentCountryName, 80, 'Almanya'),
-    opponentFlag: clampStr(battle.opponentFlag, 32, '🇩🇪'),
+    opponentCountryName: clampStr(battle.opponentCountryName, 80, 'Türkiye'),
+    opponentFlag: clampStr(battle.opponentFlag, 32, '🇹🇷'),
     opponentColor: safeHex(battle.opponentColor, '#DC2626'),
     opponentModel: battle.opponentModel,
     opponentSoldiers: Math.round(clampNum(battle.opponentSoldiers, 0, 100000000)),
@@ -227,10 +297,15 @@ export async function saveActiveBattle(battle: ActiveBattle): Promise<void> {
     updatedAt: new Date().toISOString(),
   };
 
-  try {
-    await setDoc(doc(db, 'savaslar', 'active'), payload);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'savaslar/active');
+  await adminApiFetch('/api/battle/active', 'PUT', payload);
+  broadcastStateUpdated();
+
+  if (auth.currentUser) {
+    try {
+      await setDoc(doc(db, 'savaslar', 'active'), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'savaslar/active');
+    }
   }
 }
 
@@ -248,19 +323,29 @@ export async function saveCountry(country: Country): Promise<void> {
     updatedAt: new Date().toISOString(),
   };
 
-  try {
-    await setDoc(doc(db, 'ulkeler', code), payload);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `ulkeler/${code}`);
+  await adminApiFetch(`/api/countries/${encodeURIComponent(code)}`, 'PUT', payload);
+  broadcastStateUpdated();
+
+  if (auth.currentUser) {
+    try {
+      await setDoc(doc(db, 'ulkeler', code), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `ulkeler/${code}`);
+    }
   }
 }
 
 export async function removeCountry(code: string): Promise<void> {
   const id = sanitizeId(code);
-  try {
-    await deleteDoc(doc(db, 'ulkeler', id));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `ulkeler/${id}`);
+  await adminApiFetch(`/api/countries/${encodeURIComponent(id)}`, 'DELETE');
+  broadcastStateUpdated();
+
+  if (auth.currentUser) {
+    try {
+      await deleteDoc(doc(db, 'ulkeler', id));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `ulkeler/${id}`);
+    }
   }
 }
 
@@ -276,10 +361,15 @@ export async function saveSiteSettings(settings: SiteSettings): Promise<void> {
     updatedAt: new Date().toISOString(),
   };
 
-  try {
-    await setDoc(doc(db, 'ayarlar', 'global'), payload);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'ayarlar/global');
+  await adminApiFetch('/api/battle/settings', 'PUT', payload);
+  broadcastStateUpdated();
+
+  if (auth.currentUser) {
+    try {
+      await setDoc(doc(db, 'ayarlar', 'global'), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'ayarlar/global');
+    }
   }
 }
 
@@ -294,23 +384,27 @@ export async function saveInstagramSync(sync: InstagramSync): Promise<void> {
     lastUpdatedAt: sync.lastUpdatedAt || new Date().toISOString(),
   };
 
-  try {
-    await setDoc(doc(db, 'instagram', 'kirmizivemavitakim'), payload);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, 'instagram/kirmizivemavitakim');
+  broadcastStateUpdated();
+
+  if (auth.currentUser) {
+    try {
+      await setDoc(doc(db, 'instagram', 'kirmizivemavitakim'), payload);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'instagram/kirmizivemavitakim');
+    }
   }
 }
 
 export async function addBattleHistory(entry: Omit<BattleHistoryEntry, 'id'>): Promise<string> {
   const payload: Omit<BattleHistoryEntry, 'id'> = {
     homeCountryCode: sanitizeId(entry.homeCountryCode),
-    homeCountryName: clampStr(entry.homeCountryName, 80, 'Türkiye'),
-    homeFlag: clampStr(entry.homeFlag, 32, '🇹🇷'),
+    homeCountryName: clampStr(entry.homeCountryName, 80, 'Almanya'),
+    homeFlag: clampStr(entry.homeFlag, 32, '🇩🇪'),
     homeSoldiersStart: Math.round(clampNum(entry.homeSoldiersStart, 0, 100000000)),
     homeSoldiersEnd: Math.round(clampNum(entry.homeSoldiersEnd, 0, 100000000)),
     opponentCountryCode: sanitizeId(entry.opponentCountryCode),
-    opponentCountryName: clampStr(entry.opponentCountryName, 80, 'Almanya'),
-    opponentFlag: clampStr(entry.opponentFlag, 32, '🇩🇪'),
+    opponentCountryName: clampStr(entry.opponentCountryName, 80, 'Türkiye'),
+    opponentFlag: clampStr(entry.opponentFlag, 32, '🇹🇷'),
     opponentSoldiersStart: Math.round(clampNum(entry.opponentSoldiersStart, 0, 100000000)),
     opponentSoldiersEnd: Math.round(clampNum(entry.opponentSoldiersEnd, 0, 100000000)),
     winnerSide: entry.winnerSide,
@@ -321,12 +415,23 @@ export async function addBattleHistory(entry: Omit<BattleHistoryEntry, 'id'>): P
     createdAt: entry.createdAt || new Date().toISOString(),
   };
 
-  try {
-    const docRef = await addDoc(collection(db, 'battle_history'), payload);
-    return docRef.id;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, 'battle_history');
+  let createdId = `hist_${Date.now()}`;
+  const res = await adminApiFetch('/api/battle/history', 'POST', payload);
+  if (res && res.ok) {
+    const data = (await res.json()) as { id?: string };
+    if (data.id) createdId = data.id;
   }
+  broadcastStateUpdated();
+
+  if (auth.currentUser) {
+    try {
+      const docRef = await addDoc(collection(db, 'battle_history'), payload);
+      return docRef.id;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'battle_history');
+    }
+  }
+  return createdId;
 }
 
 export async function updateBattleHistoryReels(
@@ -335,17 +440,26 @@ export async function updateBattleHistoryReels(
   reelsPath: string
 ): Promise<void> {
   const safeId = sanitizeId(id);
-  try {
-    await updateDoc(doc(db, 'battle_history', safeId), {
-      reelsUrl: clampStr(reelsUrl, 1024, ''),
-      reelsPath: clampStr(reelsPath, 256, ''),
-    });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, `battle_history/${safeId}`);
+  await adminApiFetch(`/api/battle/history/${encodeURIComponent(safeId)}/reels`, 'PUT', {
+    reelsUrl: clampStr(reelsUrl, 1024, ''),
+    reelsPath: clampStr(reelsPath, 256, ''),
+  });
+  broadcastStateUpdated();
+
+  if (auth.currentUser) {
+    try {
+      await updateDoc(doc(db, 'battle_history', safeId), {
+        reelsUrl: clampStr(reelsUrl, 1024, ''),
+        reelsPath: clampStr(reelsPath, 256, ''),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `battle_history/${safeId}`);
+    }
   }
 }
 
 export async function saveAdminRecord(admin: AdminUser): Promise<void> {
+  if (!auth.currentUser) return;
   const uid = sanitizeId(admin.uid);
   const now = new Date().toISOString();
   const payload: AdminUser = {
@@ -364,6 +478,7 @@ export async function saveAdminRecord(admin: AdminUser): Promise<void> {
 }
 
 export async function deleteAdminRecord(uid: string): Promise<void> {
+  if (!auth.currentUser) return;
   const safeId = sanitizeId(uid);
   try {
     await deleteDoc(doc(db, 'adminler', safeId));

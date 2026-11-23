@@ -162,20 +162,23 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
     scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
     pmremGenerator.dispose();
 
+    const initialAspect = (container.clientWidth || 1280) / (container.clientHeight || 720);
+    const initialAspectBoost = initialAspect < 1 ? Math.min(1.85, 1.05 / Math.max(0.45, initialAspect)) : 1;
+
     const camera = new THREE.PerspectiveCamera(
       46,
-      (container.clientWidth || 1280) / (container.clientHeight || 720),
+      initialAspect,
       0.2,
-      400
+      450
     );
-    camera.position.set(0, 36, 68);
+    camera.position.set(0, 36 * initialAspectBoost, 68 * initialAspectBoost);
 
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = !isSoftwareGl;
     controls.dampingFactor = 0.06;
     controls.maxPolarAngle = Math.PI * 0.47;
     controls.minDistance = 8;
-    controls.maxDistance = 140;
+    controls.maxDistance = 190;
     controls.target.set(0, 1.5, 0);
 
     let userInteracting = false;
@@ -954,18 +957,24 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
       // Smooth Camera Preset Transitions (yields immediately when user interacts)
       if (!userInteracting) {
         const preset = cameraPresetRef.current;
+        const aspectBoost =
+          camera.aspect < 1 ? Math.min(1.85, 1.05 / Math.max(0.45, camera.aspect)) : 1;
         if (preset === 'cinematic') {
           const angle = elapsed * 0.2;
-          _vec3.set(Math.sin(angle) * 62, 28, Math.cos(angle) * 62);
+          _vec3.set(
+            Math.sin(angle) * 62 * aspectBoost,
+            28 * aspectBoost,
+            Math.cos(angle) * 62 * aspectBoost
+          );
           _targetVec.set(0, 2, 0);
         } else if (preset === 'red') {
-          _vec3.set(-34, 16, 30);
+          _vec3.set(-34, 16 * aspectBoost, 30 * aspectBoost);
           _targetVec.set(-14, 1.5, 0);
         } else if (preset === 'blue') {
-          _vec3.set(42, 18, 36);
+          _vec3.set(42, 18 * aspectBoost, 36 * aspectBoost);
           _targetVec.set(22, 1.5, 0);
         } else {
-          _vec3.set(0, 36, 68);
+          _vec3.set(0, 36 * aspectBoost, 68 * aspectBoost);
           _targetVec.set(0, 1.5, 0);
         }
         camera.position.x = THREE.MathUtils.damp(camera.position.x, _vec3.x, 3.2, delta);
@@ -1046,31 +1055,31 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
         <div ref={mountRef} className="w-full h-full" />
       )}
 
-      {/* Collapsible Bottom Control Dock (Zero Viewport Occlusion) */}
-      <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex flex-col items-center gap-2 px-4">
+      {/* Collapsible Bottom Control Dock (Zero Viewport Occlusion, Mobile-Safe) */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-2.5 sm:bottom-4 z-20 flex flex-col items-center gap-1.5 sm:gap-2 px-2 sm:px-4">
         <button
           type="button"
           onClick={() => setDockCollapsed((v) => !v)}
-          className="pointer-events-auto inline-flex items-center gap-1.5 rounded-lg bg-[#0D131F]/90 border border-slate-700/80 px-3 py-1 text-xs font-medium text-slate-300 hover:text-white transition-colors whitespace-nowrap shrink-0"
+          className="pointer-events-auto inline-flex items-center gap-1.5 rounded-lg bg-[#0D131F]/90 border border-slate-700/80 px-3 py-1 text-[11px] sm:text-xs font-medium text-slate-300 hover:text-white transition-colors whitespace-nowrap shrink-0"
         >
           {dockCollapsed ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
           <span>{dockCollapsed ? 'Kontrolleri Göster' : 'Kontrolleri Gizle'}</span>
         </button>
 
         {!dockCollapsed && (
-          <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 rounded-xl bg-[#0D131F]/92 border border-slate-700/80 px-3 py-2 shadow-2xl max-w-[94vw]">
-            <div className="flex items-center gap-1 text-xs text-slate-400 pr-2 border-r border-slate-800 whitespace-nowrap shrink-0">
+          <div className="pointer-events-auto flex items-center gap-1.5 sm:gap-2 rounded-xl bg-[#0D131F]/92 border border-slate-700/80 px-2 py-1.5 sm:px-3 sm:py-2 shadow-2xl max-w-[96vw] overflow-x-auto">
+            <div className="hidden sm:flex items-center gap-1 text-xs text-slate-400 pr-2 border-r border-slate-800 whitespace-nowrap shrink-0">
               <Camera className="w-3.5 h-3.5 text-sky-400" />
               <span>Kamera</span>
             </div>
 
-            <div className="flex items-center gap-1 bg-[#141D2E] p-1 rounded-lg">
+            <div className="flex items-center gap-1 bg-[#141D2E] p-1 rounded-lg shrink-0">
               {presetLabels.map((item) => (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => onCameraPresetChange(item.id)}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                  className={`px-2 py-1 sm:px-2.5 text-[11px] sm:text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
                     cameraPreset === item.id
                       ? 'bg-sky-600 text-white'
                       : 'text-slate-300 hover:text-white hover:bg-slate-800/70'
@@ -1084,14 +1093,15 @@ export const Battlefield3D: React.FC<Battlefield3DProps> = ({
             <button
               type="button"
               onClick={toggleAudio}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 sm:px-3 rounded-lg text-[11px] sm:text-xs font-medium border transition-colors whitespace-nowrap shrink-0 ${
                 audioEnabled
                   ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-300'
                   : 'bg-[#141D2E] border-slate-700 text-slate-300 hover:text-white'
               }`}
             >
               {audioEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
-              <span>{audioEnabled ? 'Ses Açık' : 'Ses Kapalı'}</span>
+              <span className="hidden sm:inline">{audioEnabled ? 'Ses Açık' : 'Ses Kapalı'}</span>
+              <span className="sm:hidden">{audioEnabled ? 'Açık' : 'Ses'}</span>
             </button>
           </div>
         )}

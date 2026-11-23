@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { AdminPanel } from './components/AdminPanel';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -8,6 +8,8 @@ import {
   DEFAULT_BATTLE,
   DEFAULT_INSTAGRAM,
   DEFAULT_SETTINGS,
+  fetchServerBattleState,
+  subscribeLocalSyncSignal,
   subscribePublicBattleState,
 } from './services/battleStore';
 import { auth } from './services/firebase';
@@ -24,6 +26,14 @@ function isAdminRouteHash(hash: string): boolean {
   return normalized === '#/yoneticipaneli' || normalized.startsWith('#/yoneticipaneli/');
 }
 
+function isNewer(incomingTs?: string, currentTs?: string): boolean {
+  const inMs = incomingTs ? Date.parse(incomingTs) : 0;
+  const curMs = currentTs ? Date.parse(currentTs) : 0;
+  if (!Number.isFinite(inMs)) return false;
+  if (!Number.isFinite(curMs)) return true;
+  return inMs >= curMs;
+}
+
 export default function App() {
   const [hash, setHash] = useState<string>(() => window.location.hash);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
@@ -32,6 +42,10 @@ export default function App() {
   const [instagram, setInstagram] = useState<InstagramSync>(DEFAULT_INSTAGRAM);
   const [countries, setCountries] = useState<Country[]>(WORLD_COUNTRIES);
   const [history, setHistory] = useState<BattleHistoryEntry[]>([]);
+
+  const battleTsRef = useRef<string>(DEFAULT_BATTLE.updatedAt);
+  const settingsTsRef = useRef<string>(DEFAULT_SETTINGS.updatedAt);
+  const igTsRef = useRef<string>(DEFAULT_INSTAGRAM.lastUpdatedAt);
 
   useEffect(() => {
     const onHashChange = () => setHash(window.location.hash);
@@ -47,27 +61,70 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const unsub = subscribePublicBattleState({
-      onBattle: setBattle,
-      onSettings: setSettings,
-      onInstagram: setInstagram,
+    const applyBattleIfNewer = (next: ActiveBattle) => {
+      if (isNewer(next.updatedAt, battleTsRef.current)) {
+        battleTsRef.current = next.updatedAt;
+        setBattle(next);
+      }
+    };
+    const applySettingsIfNewer = (next: SiteSettings) => {
+      if (isNewer(next.updatedAt, settingsTsRef.current)) {
+        settingsTsRef.current = next.updatedAt;
+        setSettings(next);
+      }
+    };
+    const applyIgIfNewer = (next: InstagramSync) => {
+      if (isNewer(next.lastUpdatedAt, igTsRef.current)) {
+        igTsRef.current = next.lastUpdatedAt;
+        setInstagram(next);
+      }
+    };
+
+    const unsubFirestore = subscribePublicBattleState({
+      onBattle: applyBattleIfNewer,
+      onSettings: applySettingsIfNewer,
+      onInstagram: applyIgIfNewer,
       onCountries: setCountries,
       onHistory: setHistory,
     });
 
-    // Also pull latest cached server Instagram state on boot if Firestore doc is still pending
-    fetch('/api/instagram/status')
-      .then((r) => r.json())
-      .then((srvIg: InstagramSync) => {
-        if (srvIg && typeof srvIg.lastValidFollowers === 'number') {
-          setInstagram((curr) =>
-            curr.syncStatus === 'pending' ? { ...curr, ...srvIg } : curr
-          );
-        }
-      })
-      .catch(() => {});
+    const pullServerState = async () => {
+      const srv = await fetchServerBattleState();
+      if (!srv) return;
+      applyBattleIfNewer(srv.battle);
+      applySettingsIfNewer(srv.settings);
+      applyIgIfNewer(srv.instagram);
+      if (srv.history.length > 0) {
+        setHistory((curr) => (srv.history.length >= curr.length ? srv.history : curr));
+      }
+      if (srv.countryOverrides.length > 0 || srv.removedCountryCodes.length > 0) {
+        const overrideMap = new Map(srv.countryOverrides.map((c) => [c.code, c]));
+        const removed = new Set(srv.removedCountryCodes);
+        const merged = WORLD_COUNTRIES.filter((c) => !removed.has(c.code)).map(
+          (c) => overrideMap.get(c.code) ?? c
+        );
+        overrideMap.forEach((c, code) => {
+          if (!WORLD_COUNTRIES.some((w) => w.code === code) && !removed.has(code)) {
+            merged.unshift(c);
+          }
+        });
+        setCountries(merged);
+      }
+    };
 
-    return () => unsub();
+    void pullServerState();
+    const unsubLocal = subscribeLocalSyncSignal(() => {
+      void pullServerState();
+    });
+    const pollId = window.setInterval(() => {
+      void pullServerState();
+    }, 2500);
+
+    return () => {
+      unsubFirestore();
+      unsubLocal();
+      window.clearInterval(pollId);
+    };
   }, []);
 
   const showAdmin = isAdminRouteHash(hash);
