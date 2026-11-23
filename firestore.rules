@@ -1,0 +1,251 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'fatihckr210@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/adminler/$(request.auth.uid))
+      );
+    }
+
+    function isValidColor(val) {
+      return val is string && val.size() == 7 && val.matches('^#[0-9a-fA-F]{6}$');
+    }
+
+    function isValidModelType(val) {
+      return val is string && val in ['infantry', 'commando', 'heavy', 'guard'];
+    }
+
+    function isValidAdminUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 180 &&
+        (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 80)) &&
+        data.role in ['superadmin', 'admin'] &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidCountry(data) {
+      return data.keys().hasAll(['code', 'name', 'flag', 'soldierCount', 'color', 'modelType', 'updatedAt']) &&
+        data.keys().hasOnly(['code', 'name', 'flag', 'soldierCount', 'color', 'modelType', 'imageUrl', 'isCustom', 'updatedAt']) &&
+        isValidId(data.code) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        data.flag is string && data.flag.size() >= 1 && data.flag.size() <= 32 &&
+        data.soldierCount is number && data.soldierCount >= 0 && data.soldierCount <= 100000000 &&
+        isValidColor(data.color) &&
+        isValidModelType(data.modelType) &&
+        (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 512)) &&
+        (!('isCustom' in data) || data.isCustom is bool) &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidActiveBattle(data) {
+      return data.keys().hasAll([
+          'homeCountryCode', 'homeCountryName', 'homeFlag', 'homeColor', 'homeModel', 'homeSoldiers', 'homeRemaining',
+          'opponentCountryCode', 'opponentCountryName', 'opponentFlag', 'opponentColor', 'opponentModel', 'opponentSoldiers', 'opponentRemaining',
+          'status', 'wallHeight', 'winnerSide', 'arenaTheme', 'battleSpeed', 'manualOverrideBlue', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'homeCountryCode', 'homeCountryName', 'homeFlag', 'homeColor', 'homeModel', 'homeSoldiers', 'homeRemaining',
+          'opponentCountryCode', 'opponentCountryName', 'opponentFlag', 'opponentColor', 'opponentModel', 'opponentSoldiers', 'opponentRemaining',
+          'status', 'wallHeight', 'scheduledStartAt', 'winnerSide', 'winnerName', 'arenaTheme', 'battleSpeed', 'soldierScale', 'manualOverrideBlue', 'updatedAt'
+        ]) &&
+        isValidId(data.homeCountryCode) &&
+        data.homeCountryName is string && data.homeCountryName.size() >= 1 && data.homeCountryName.size() <= 80 &&
+        data.homeFlag is string && data.homeFlag.size() >= 1 && data.homeFlag.size() <= 32 &&
+        isValidColor(data.homeColor) &&
+        isValidModelType(data.homeModel) &&
+        data.homeSoldiers is number && data.homeSoldiers >= 0 && data.homeSoldiers <= 100000000 &&
+        data.homeRemaining is number && data.homeRemaining >= 0 && data.homeRemaining <= 100000000 &&
+        isValidId(data.opponentCountryCode) &&
+        data.opponentCountryName is string && data.opponentCountryName.size() >= 1 && data.opponentCountryName.size() <= 80 &&
+        data.opponentFlag is string && data.opponentFlag.size() >= 1 && data.opponentFlag.size() <= 32 &&
+        isValidColor(data.opponentColor) &&
+        isValidModelType(data.opponentModel) &&
+        data.opponentSoldiers is number && data.opponentSoldiers >= 0 && data.opponentSoldiers <= 100000000 &&
+        data.opponentRemaining is number && data.opponentRemaining >= 0 && data.opponentRemaining <= 100000000 &&
+        data.status in ['idle', 'countdown', 'wall_lowering', 'fighting', 'finished'] &&
+        data.wallHeight is number && data.wallHeight >= 0 && data.wallHeight <= 50 &&
+        (!('scheduledStartAt' in data) || (data.scheduledStartAt is string && data.scheduledStartAt.size() <= 64)) &&
+        data.winnerSide in ['none', 'home', 'opponent', 'draw'] &&
+        (!('winnerName' in data) || (data.winnerName is string && data.winnerName.size() <= 80)) &&
+        data.arenaTheme in ['twilight', 'desert', 'alpine'] &&
+        data.battleSpeed is number && data.battleSpeed >= 0.25 && data.battleSpeed <= 5 &&
+        (!('soldierScale' in data) || (data.soldierScale is number && data.soldierScale >= 0.5 && data.soldierScale <= 2)) &&
+        data.manualOverrideBlue is bool &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidSiteSettings(data) {
+      return data.keys().hasAll([
+          'soldiersPerFollower', 'instagramHandle', 'autoSyncMinutes', 'arenaTheme',
+          'wallLoweringDuration', 'battleSpeed', 'defaultCamera', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'soldiersPerFollower', 'instagramHandle', 'autoSyncMinutes', 'arenaTheme',
+          'wallLoweringDuration', 'battleSpeed', 'defaultCamera', 'updatedAt'
+        ]) &&
+        data.soldiersPerFollower is number && data.soldiersPerFollower >= 1 && data.soldiersPerFollower <= 1000 &&
+        data.instagramHandle is string && data.instagramHandle.size() >= 1 && data.instagramHandle.size() <= 64 &&
+        data.autoSyncMinutes is number && data.autoSyncMinutes >= 1 && data.autoSyncMinutes <= 1440 &&
+        data.arenaTheme in ['twilight', 'desert', 'alpine'] &&
+        data.wallLoweringDuration is number && data.wallLoweringDuration >= 1 && data.wallLoweringDuration <= 20 &&
+        data.battleSpeed is number && data.battleSpeed >= 0.25 && data.battleSpeed <= 5 &&
+        data.defaultCamera in ['overview', 'red', 'blue', 'cinematic'] &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidInstagramSync(data) {
+      return data.keys().hasAll(['handle', 'followers', 'lastValidFollowers', 'syncStatus', 'lastUpdatedAt']) &&
+        data.keys().hasOnly(['handle', 'followers', 'lastValidFollowers', 'syncStatus', 'source', 'lastError', 'lastUpdatedAt']) &&
+        data.handle is string && data.handle.size() >= 1 && data.handle.size() <= 64 &&
+        data.followers is number && data.followers >= 0 && data.followers <= 1000000000 &&
+        data.lastValidFollowers is number && data.lastValidFollowers >= 0 && data.lastValidFollowers <= 1000000000 &&
+        data.syncStatus in ['ok', 'preserved_fallback', 'pending'] &&
+        (!('source' in data) || (data.source is string && data.source.size() <= 64)) &&
+        (!('lastError' in data) || (data.lastError is string && data.lastError.size() <= 240)) &&
+        data.lastUpdatedAt is string && data.lastUpdatedAt.size() <= 64;
+    }
+
+    function isValidBattleHistory(data) {
+      return data.keys().hasAll([
+          'homeCountryCode', 'homeCountryName', 'homeFlag', 'homeSoldiersStart', 'homeSoldiersEnd',
+          'opponentCountryCode', 'opponentCountryName', 'opponentFlag', 'opponentSoldiersStart', 'opponentSoldiersEnd',
+          'winnerSide', 'winnerName', 'durationSeconds', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'homeCountryCode', 'homeCountryName', 'homeFlag', 'homeSoldiersStart', 'homeSoldiersEnd',
+          'opponentCountryCode', 'opponentCountryName', 'opponentFlag', 'opponentSoldiersStart', 'opponentSoldiersEnd',
+          'winnerSide', 'winnerName', 'durationSeconds', 'reelsUrl', 'reelsPath', 'createdAt'
+        ]) &&
+        isValidId(data.homeCountryCode) &&
+        data.homeCountryName is string && data.homeCountryName.size() >= 1 && data.homeCountryName.size() <= 80 &&
+        data.homeFlag is string && data.homeFlag.size() >= 1 && data.homeFlag.size() <= 32 &&
+        data.homeSoldiersStart is number && data.homeSoldiersStart >= 0 && data.homeSoldiersStart <= 100000000 &&
+        data.homeSoldiersEnd is number && data.homeSoldiersEnd >= 0 && data.homeSoldiersEnd <= 100000000 &&
+        isValidId(data.opponentCountryCode) &&
+        data.opponentCountryName is string && data.opponentCountryName.size() >= 1 && data.opponentCountryName.size() <= 80 &&
+        data.opponentFlag is string && data.opponentFlag.size() >= 1 && data.opponentFlag.size() <= 32 &&
+        data.opponentSoldiersStart is number && data.opponentSoldiersStart >= 0 && data.opponentSoldiersStart <= 100000000 &&
+        data.opponentSoldiersEnd is number && data.opponentSoldiersEnd >= 0 && data.opponentSoldiersEnd <= 100000000 &&
+        data.winnerSide in ['home', 'opponent', 'draw'] &&
+        data.winnerName is string && data.winnerName.size() >= 1 && data.winnerName.size() <= 80 &&
+        data.durationSeconds is number && data.durationSeconds >= 0 && data.durationSeconds <= 86400 &&
+        (!('reelsUrl' in data) || (data.reelsUrl is string && data.reelsUrl.size() <= 1024)) &&
+        (!('reelsPath' in data) || (data.reelsPath is string && data.reelsPath.size() <= 256)) &&
+        data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    // Startup connectivity probe
+    match /test/connection {
+      allow get: if true;
+    }
+
+    // Administrator accounts: strict PII isolation
+    match /adminler/{adminId} {
+      allow get: if isValidId(adminId) && isAdmin();
+      allow list: if isVerifiedUser() && (request.auth.token.email == 'fatihckr210@gmail.com' || existing().email == request.auth.token.email);
+      allow create: if isValidId(adminId) && isAdmin() && isValidAdminUser(incoming());
+      allow update: if isValidId(adminId) && isAdmin() && isValidAdminUser(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'role', 'updatedAt']);
+      allow delete: if isValidId(adminId) && isBootstrappedAdmin();
+    }
+
+    // Countries catalog overrides & custom countries
+    match /ulkeler/{countryId} {
+      allow get: if isValidId(countryId);
+      allow list: if true;
+      allow create: if isValidId(countryId) && isAdmin() && isValidCountry(incoming());
+      allow update: if isValidId(countryId) && isAdmin() && isValidCountry(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['code', 'name', 'flag', 'soldierCount', 'color', 'modelType', 'imageUrl', 'isCustom', 'updatedAt']);
+      allow delete: if isValidId(countryId) && isAdmin();
+    }
+
+    // Active 3D battle state
+    match /savaslar/{battleId} {
+      allow get: if isValidId(battleId);
+      allow list: if true;
+      allow create: if isValidId(battleId) && isAdmin() && isValidActiveBattle(incoming());
+      allow update: if isValidId(battleId) && isAdmin() && isValidActiveBattle(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'homeCountryCode', 'homeCountryName', 'homeFlag', 'homeColor', 'homeModel', 'homeSoldiers', 'homeRemaining',
+          'opponentCountryCode', 'opponentCountryName', 'opponentFlag', 'opponentColor', 'opponentModel', 'opponentSoldiers', 'opponentRemaining',
+          'status', 'wallHeight', 'scheduledStartAt', 'winnerSide', 'winnerName', 'arenaTheme', 'battleSpeed', 'soldierScale', 'manualOverrideBlue', 'updatedAt'
+        ]);
+      allow delete: if isValidId(battleId) && isAdmin();
+    }
+
+    // Global site & 3D arena settings
+    match /ayarlar/{settingId} {
+      allow get: if isValidId(settingId);
+      allow list: if true;
+      allow create: if isValidId(settingId) && isAdmin() && isValidSiteSettings(incoming());
+      allow update: if isValidId(settingId) && isAdmin() && isValidSiteSettings(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'soldiersPerFollower', 'instagramHandle', 'autoSyncMinutes', 'arenaTheme',
+          'wallLoweringDuration', 'battleSpeed', 'defaultCamera', 'updatedAt'
+        ]);
+      allow delete: if isValidId(settingId) && isAdmin();
+    }
+
+    // Instagram follower sync status
+    match /instagram/{accountId} {
+      allow get: if isValidId(accountId);
+      allow list: if true;
+      allow create: if isValidId(accountId) && isAdmin() && isValidInstagramSync(incoming());
+      allow update: if isValidId(accountId) && isAdmin() && isValidInstagramSync(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'handle', 'followers', 'lastValidFollowers', 'syncStatus', 'source', 'lastError', 'lastUpdatedAt'
+        ]);
+      allow delete: if isValidId(accountId) && isAdmin();
+    }
+
+    // Battle history & Reels archive
+    match /battle_history/{historyId} {
+      allow get: if isValidId(historyId);
+      allow list: if true;
+      allow create: if isValidId(historyId) && isAdmin() && isValidBattleHistory(incoming());
+      allow update: if isValidId(historyId) && isAdmin() && isValidBattleHistory(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'homeCountryCode', 'homeCountryName', 'homeFlag', 'homeSoldiersStart', 'homeSoldiersEnd',
+          'opponentCountryCode', 'opponentCountryName', 'opponentFlag', 'opponentSoldiersStart', 'opponentSoldiersEnd',
+          'winnerSide', 'winnerName', 'durationSeconds', 'reelsUrl', 'reelsPath'
+        ]);
+      allow delete: if isValidId(historyId) && isAdmin();
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Kırmızı ve Mavi Takım — 3B Ülke Savaş Arenası",
+  "description": "Instagram @kirmizivemavitakim takipçi sayısına bağlı otomatik asker gücüyle gerçek zamanlı 3B ülke karşılaştırma ve savaş simülasyonu platformu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

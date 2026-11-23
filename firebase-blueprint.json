@@ -1,0 +1,194 @@
+{
+  "entities": {
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Administrator account permissions and metadata.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 180 },
+        "displayName": { "type": "string", "maxLength": 80 },
+        "role": { "type": "string", "enum": ["superadmin", "admin"] },
+        "createdAt": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["uid", "email", "role", "createdAt", "updatedAt"]
+    },
+    "Country": {
+      "title": "Country",
+      "description": "Country configuration including soldier count, color, flag, and 3D model.",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "minLength": 2, "maxLength": 12, "pattern": "^[A-Za-z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "flag": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "soldierCount": { "type": "number" },
+        "color": { "type": "string", "maxLength": 16, "pattern": "^#[0-9a-fA-F]{6}$" },
+        "modelType": { "type": "string", "enum": ["infantry", "commando", "heavy", "guard"] },
+        "imageUrl": { "type": "string", "maxLength": 512 },
+        "isCustom": { "type": "boolean" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["code", "name", "flag", "soldierCount", "color", "modelType", "updatedAt"]
+    },
+    "ActiveBattle": {
+      "title": "ActiveBattle",
+      "description": "Live battle configuration and real-time simulation state.",
+      "type": "object",
+      "properties": {
+        "homeCountryCode": { "type": "string", "minLength": 2, "maxLength": 12 },
+        "homeCountryName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "homeFlag": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "homeColor": { "type": "string", "maxLength": 16, "pattern": "^#[0-9a-fA-F]{6}$" },
+        "homeModel": { "type": "string", "enum": ["infantry", "commando", "heavy", "guard"] },
+        "homeSoldiers": { "type": "number" },
+        "homeRemaining": { "type": "number" },
+        "opponentCountryCode": { "type": "string", "minLength": 2, "maxLength": 12 },
+        "opponentCountryName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "opponentFlag": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "opponentColor": { "type": "string", "maxLength": 16, "pattern": "^#[0-9a-fA-F]{6}$" },
+        "opponentModel": { "type": "string", "enum": ["infantry", "commando", "heavy", "guard"] },
+        "opponentSoldiers": { "type": "number" },
+        "opponentRemaining": { "type": "number" },
+        "status": { "type": "string", "enum": ["idle", "countdown", "wall_lowering", "fighting", "finished"] },
+        "wallHeight": { "type": "number" },
+        "scheduledStartAt": { "type": "string", "maxLength": 64 },
+        "winnerSide": { "type": "string", "enum": ["none", "home", "opponent", "draw"] },
+        "winnerName": { "type": "string", "maxLength": 80 },
+        "arenaTheme": { "type": "string", "enum": ["twilight", "desert", "alpine"] },
+        "battleSpeed": { "type": "number" },
+        "soldierScale": { "type": "number" },
+        "manualOverrideBlue": { "type": "boolean" },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": [
+        "homeCountryCode",
+        "homeCountryName",
+        "homeFlag",
+        "homeColor",
+        "homeModel",
+        "homeSoldiers",
+        "homeRemaining",
+        "opponentCountryCode",
+        "opponentCountryName",
+        "opponentFlag",
+        "opponentColor",
+        "opponentModel",
+        "opponentSoldiers",
+        "opponentRemaining",
+        "status",
+        "wallHeight",
+        "winnerSide",
+        "arenaTheme",
+        "battleSpeed",
+        "manualOverrideBlue",
+        "updatedAt"
+      ]
+    },
+    "SiteSettings": {
+      "title": "SiteSettings",
+      "description": "Global site and 3D battle parameters.",
+      "type": "object",
+      "properties": {
+        "soldiersPerFollower": { "type": "number" },
+        "instagramHandle": { "type": "string", "maxLength": 64 },
+        "autoSyncMinutes": { "type": "number" },
+        "arenaTheme": { "type": "string", "enum": ["twilight", "desert", "alpine"] },
+        "wallLoweringDuration": { "type": "number" },
+        "battleSpeed": { "type": "number" },
+        "defaultCamera": { "type": "string", "enum": ["overview", "red", "blue", "cinematic"] },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": [
+        "soldiersPerFollower",
+        "instagramHandle",
+        "autoSyncMinutes",
+        "arenaTheme",
+        "wallLoweringDuration",
+        "battleSpeed",
+        "defaultCamera",
+        "updatedAt"
+      ]
+    },
+    "InstagramSync": {
+      "title": "InstagramSync",
+      "description": "Instagram @kirmizivemavitakim follower state and last valid count.",
+      "type": "object",
+      "properties": {
+        "handle": { "type": "string", "maxLength": 64 },
+        "followers": { "type": "number" },
+        "lastValidFollowers": { "type": "number" },
+        "syncStatus": { "type": "string", "enum": ["ok", "preserved_fallback", "pending"] },
+        "source": { "type": "string", "maxLength": 64 },
+        "lastError": { "type": "string", "maxLength": 240 },
+        "lastUpdatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["handle", "followers", "lastValidFollowers", "syncStatus", "lastUpdatedAt"]
+    },
+    "BattleHistoryEntry": {
+      "title": "BattleHistoryEntry",
+      "description": "Completed battle record, comparison metrics, and optional Reels video URL.",
+      "type": "object",
+      "properties": {
+        "homeCountryCode": { "type": "string", "maxLength": 12 },
+        "homeCountryName": { "type": "string", "maxLength": 80 },
+        "homeFlag": { "type": "string", "maxLength": 32 },
+        "homeSoldiersStart": { "type": "number" },
+        "homeSoldiersEnd": { "type": "number" },
+        "opponentCountryCode": { "type": "string", "maxLength": 12 },
+        "opponentCountryName": { "type": "string", "maxLength": 80 },
+        "opponentFlag": { "type": "string", "maxLength": 32 },
+        "opponentSoldiersStart": { "type": "number" },
+        "opponentSoldiersEnd": { "type": "number" },
+        "winnerSide": { "type": "string", "enum": ["home", "opponent", "draw"] },
+        "winnerName": { "type": "string", "maxLength": 80 },
+        "durationSeconds": { "type": "number" },
+        "reelsUrl": { "type": "string", "maxLength": 1024 },
+        "reelsPath": { "type": "string", "maxLength": 256 },
+        "createdAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": [
+        "homeCountryCode",
+        "homeCountryName",
+        "homeFlag",
+        "homeSoldiersStart",
+        "homeSoldiersEnd",
+        "opponentCountryCode",
+        "opponentCountryName",
+        "opponentFlag",
+        "opponentSoldiersStart",
+        "opponentSoldiersEnd",
+        "winnerSide",
+        "winnerName",
+        "durationSeconds",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/adminler/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Administrator accounts and roles. Strictly private to admins."
+    },
+    "/ulkeler/{countryId}": {
+      "schema": { "$ref": "#/entities/Country" },
+      "description": "World country catalog overrides and custom countries."
+    },
+    "/savaslar/{battleId}": {
+      "schema": { "$ref": "#/entities/ActiveBattle" },
+      "description": "Active battle state and real-time simulation parameters."
+    },
+    "/ayarlar/{settingId}": {
+      "schema": { "$ref": "#/entities/SiteSettings" },
+      "description": "Global site and 3D battle arena settings."
+    },
+    "/instagram/{accountId}": {
+      "schema": { "$ref": "#/entities/InstagramSync" },
+      "description": "Instagram follower sync state for @kirmizivemavitakim."
+    },
+    "/battle_history/{historyId}": {
+      "schema": { "$ref": "#/entities/BattleHistoryEntry" },
+      "description": "Historical battle outcomes, country comparisons, and Reels archive."
+    }
+  }
+}
